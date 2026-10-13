@@ -28,7 +28,7 @@ jobs:
     name: 密钥扫描
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with: { fetch-depth: 0 }
       - name: gitleaks（只扫本次新增的提交）
         run: |
@@ -47,9 +47,9 @@ jobs:
     name: 运维规范
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with: { fetch-depth: 0 }
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with: { repository: imelonkid/melon-skills, path: .melon-skills }
       - name: project-init check.sh
         run: |
@@ -62,11 +62,11 @@ jobs:
     name: 测试
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - id: has
         run: '[[ -f scripts/ci-test.sh ]] && echo yes=1 >> "$GITHUB_OUTPUT" || echo "没有 scripts/ci-test.sh，跳过"'
       - if: steps.has.outputs.yes == '1'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with: { node-version: "${{ inputs.node-version }}" }
       - if: steps.has.outputs.yes == '1'
         run: corepack enable && bash scripts/ci-test.sh
@@ -75,7 +75,7 @@ jobs:
     name: 镜像构建
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - id: has
         run: '[[ -f deploy/Dockerfile ]] && echo yes=1 >> "$GITHUB_OUTPUT" || echo "没有 deploy/Dockerfile，跳过"'
       - if: steps.has.outputs.yes == '1'
