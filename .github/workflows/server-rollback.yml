@@ -1,0 +1,40 @@
+# 可复用：服务端回滚（开发发布平台 P4.3）。不受发布窗口限制、不需要门禁，秒级。
+#   jobs:
+#     rollback:
+#       uses: imelonkid/melon-ci/.github/workflows/server-rollback.yml@v1
+#       with: { service: jolly, tag: "${{ inputs.tag }}" }   # tag 留空 = 上一个成功上线的版本
+#       secrets: inherit
+name: server-rollback
+
+on:
+  workflow_call:
+    inputs:
+      service: { type: string, required: true }
+      tag:     { type: string, default: "" }
+
+permissions:
+  contents: read
+  deployments: write
+
+concurrency:
+  group: release-${{ github.repository }}-${{ inputs.service }}
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    name: 回滚
+    runs-on: ubuntu-latest
+    steps:
+      - name: 连接部署入口
+        env: { KEY: "${{ secrets.DEPLOY_SSH_KEY }}", KH: "${{ vars.DEPLOY_KNOWN_HOSTS }}", H: "${{ vars.DEPLOY_HOST }}" }
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
+          printf '%s\n' "$KH" > ~/.ssh/known_hosts
+          printf 'Host deploy-target\n  HostName %s\n  User %s\n  IdentityFile ~/.ssh/deploy\n  IdentitiesOnly yes\n  StrictHostKeyChecking yes\n' "${H#*@}" "${H%@*}" > ~/.ssh/config
+      - name: 回滚
+        env: { N: "${{ inputs.service }}", T: "${{ inputs.tag }}" }
+        run: |
+          [[ -z "$T" || "$T" =~ ^[A-Za-z-]*v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::tag 不合法：$T"; exit 1; }
+          ssh deploy-target rollback "$N" $T "as=gh-${{ github.actor }}"
+          ssh deploy-target status "$N" | head -3 | tee -a "$GITHUB_STEP_SUMMARY"

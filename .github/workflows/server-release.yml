@@ -1,0 +1,126 @@
+# 可复用：服务端发布（开发发布平台 P4.3）。一条流水线里接力完成：门禁 → 打 tag → 构建 → 上传 → 部署 → 记录。
+#
+# 为什么不靠「推 tag 触发部署」：用 GITHUB_TOKEN 推的 tag 不会触发其他流水线（GitHub 防止递归触发）。
+#
+# 项目里这样调用（见 jolly 的 .github/workflows/release.yml）：
+#   jobs:
+#     release:
+#       uses: imelonkid/melon-ci/.github/workflows/server-release.yml@v1
+#       with: { service: jolly, tag-prefix: server-v, bump: "${{ inputs.bump }}", emergency: ${{ inputs.emergency }} }
+#       secrets: inherit
+#
+# 仓库需要：Secret DEPLOY_SSH_KEY（只能调用部署入口、只能操作本服务）；变量 DEPLOY_HOST（deploy@<IP>）、DEPLOY_KNOWN_HOSTS
+name: server-release
+
+on:
+  workflow_call:
+    inputs:
+      service:    { type: string, required: true }
+      tag-prefix: { type: string, default: "v" }
+      bump:       { type: string, default: "patch" }      # patch | minor | major | 已有 tag（重新部署 / 回滚到它）
+      emergency:  { type: boolean, default: false }
+    outputs:
+      tag: { value: "${{ jobs.gate.outputs.tag }}" }
+
+permissions:
+  contents: write
+  checks: read
+  deployments: write
+
+concurrency:
+  group: release-${{ github.repository }}-${{ inputs.service }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: 门禁与打 tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      new: ${{ steps.tag.outputs.new }}
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0, ref: main }
+      - name: 发布窗口（08–23 点，北京时间）
+        if: ${{ !inputs.emergency }}
+        run: |
+          h=$(TZ=Asia/Shanghai date +%H); h=$((10#$h))
+          if (( h < 8 || h >= 23 )); then echo "::error::现在不在发布窗口（08–23 点）。紧急变更勾选 emergency，并在 24 小时内补复盘"; exit 1; fi
+      - name: main 最新提交的 CI 必须是绿的（免费账号私有仓库没有分支保护，这里代替）
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          sha=$(git rev-parse HEAD)
+          runs=$(gh api "repos/${{ github.repository }}/commits/$sha/check-runs?per_page=100" --jq '[.check_runs[] | select(.name | startswith("check /"))]')
+          n=$(jq length <<<"$runs"); bad=$(jq '[.[] | select(.conclusion != "success")] | length' <<<"$runs")
+          echo "main@${sha::8}：CI 检查 $n 项，未通过 $bad 项"
+          (( n > 0 )) || { echo "::error::main 最新提交没有 CI 结果（等 CI 跑完再发）"; exit 1; }
+          (( bad == 0 )) || { jq -r '.[] | "  \(.name)：\(.status) \(.conclusion)"' <<<"$runs"; echo "::error::main 的 CI 没通过，不能发布"; exit 1; }
+      - name: 定 tag
+        id: tag
+        env: { P: "${{ inputs.tag-prefix }}", B: "${{ inputs.bump }}" }
+        run: |
+          git fetch -q --tags
+          case "$B" in
+            patch|minor|major)
+              last=$(git tag -l "${P}[0-9]*.[0-9]*.[0-9]*" --sort=-v:refname | head -1); last=${last:-${P}0.0.0}
+              IFS=. read -r ma mi pa <<<"${last#"$P"}"
+              case "$B" in major) t="${P}$((ma+1)).0.0";; minor) t="${P}$ma.$((mi+1)).0";; patch) t="${P}$ma.$mi.$((pa+1))";; esac
+              git config user.name "github-actions[bot]"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git tag -a "$t" -m "release $t（${{ github.actor }} 经 GitHub Actions 发布）"
+              git push -q origin "$t"
+              echo "新版本 $t（上一版 $last）" >> "$GITHUB_STEP_SUMMARY"
+              echo "new=1" >> "$GITHUB_OUTPUT" ;;
+            "$P"[0-9]*)
+              git rev-parse -q --verify "refs/tags/$B" >/dev/null || { echo "::error::tag $B 不存在"; exit 1; }
+              t="$B"; echo "new=0" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::bump 要是 patch / minor / major 或已有的 ${P}X.Y.Z"; exit 1 ;;
+          esac
+          echo "tag=$t" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: 构建与部署
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with: { ref: "${{ needs.gate.outputs.tag }}", fetch-depth: 0 }
+      - name: 连接部署入口
+        env: { KEY: "${{ secrets.DEPLOY_SSH_KEY }}", KH: "${{ vars.DEPLOY_KNOWN_HOSTS }}", H: "${{ vars.DEPLOY_HOST }}" }
+        run: |
+          [[ -n "$KEY" && -n "$H" && -n "$KH" ]] || { echo "::error::缺 Secret DEPLOY_SSH_KEY 或变量 DEPLOY_HOST / DEPLOY_KNOWN_HOSTS"; exit 1; }
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
+          printf '%s\n' "$KH" > ~/.ssh/known_hosts
+          printf 'Host deploy-target\n  HostName %s\n  User %s\n  IdentityFile ~/.ssh/deploy\n  IdentitiesOnly yes\n  StrictHostKeyChecking yes\n  ServerAliveInterval 30\n' "${H#*@}" "${H%@*}" > ~/.ssh/config
+          ssh deploy-target version
+      - name: 记录部署开始（GitHub Deployments）
+        id: dep
+        continue-on-error: true
+        env: { GH_TOKEN: "${{ github.token }}", T: "${{ needs.gate.outputs.tag }}" }
+        run: |
+          id=$(jq -n --arg ref "$T" --arg d "${{ inputs.service }} $T" \
+                '{ref:$ref, environment:"production", description:$d, auto_merge:false, required_contexts:[]}' \
+                | gh api -X POST "repos/${{ github.repository }}/deployments" --input - --jq .id)
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          gh api -X POST "repos/${{ github.repository }}/deployments/$id/statuses" -f state=in_progress >/dev/null
+      - name: 镜像：服务器已有就跳过；否则从 tag 构建（与 deploy.sh 同一套上下文准备）并上传
+        env: { T: "${{ needs.gate.outputs.tag }}", N: "${{ inputs.service }}" }
+        run: |
+          if ssh deploy-target has "$N" "$T"; then echo "服务器已有 $N:$T，跳过构建"; exit 0; fi
+          SRC="$(mktemp -d)"; git archive "$T" | tar -x -C "$SRC"
+          CTX="$SRC"; DOCKERFILE="$SRC/deploy/Dockerfile"; TAG="$T"
+          if [[ -f "$SRC/deploy/prepare-context.sh" ]]; then source "$SRC/deploy/prepare-context.sh"; fi
+          docker build -f "$DOCKERFILE" --build-arg APP_VERSION="$T" -t "$N:$T" "$CTX"
+          echo "上传镜像 $(docker image inspect "$N:$T" --format '{{.Size}}' | numfmt --to=iec)"
+          time (docker save "$N:$T" | gzip -1 | ssh deploy-target load "$N" "$T")
+      - name: 部署
+        env: { T: "${{ needs.gate.outputs.tag }}", N: "${{ inputs.service }}" }
+        run: ssh deploy-target deploy "$N" "$T" "as=gh-${{ github.actor }}"
+      - name: 记录部署结果
+        if: always() && steps.dep.outputs.id
+        continue-on-error: true
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          s=$([[ "${{ job.status }}" == success ]] && echo success || echo failure)
+          gh api -X POST "repos/${{ github.repository }}/deployments/${{ steps.dep.outputs.id }}/statuses" -f state=$s >/dev/null
+          echo "部署 ${{ inputs.service }} ${{ needs.gate.outputs.tag }}：$s" >> "$GITHUB_STEP_SUMMARY"
