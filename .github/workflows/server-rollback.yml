@@ -24,6 +24,7 @@ jobs:
   rollback:
     name: 回滚
     runs-on: ubuntu-latest
+    environment: production
     steps:
       - name: 连接部署入口
         env: { KEY: "${{ secrets.DEPLOY_SSH_KEY }}", KH: "${{ vars.DEPLOY_KNOWN_HOSTS }}", H: "${{ vars.DEPLOY_HOST }}" }

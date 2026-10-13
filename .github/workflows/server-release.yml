@@ -9,7 +9,8 @@
 #       with: { service: jolly, tag-prefix: server-v, bump: "${{ inputs.bump }}", emergency: ${{ inputs.emergency }} }
 #       secrets: inherit
 #
-# 仓库需要：Secret DEPLOY_SSH_KEY（只能调用部署入口、只能操作本服务）；变量 DEPLOY_HOST（deploy@<IP>）、DEPLOY_KNOWN_HOSTS
+# 仓库需要 production 环境（只允许 main 分支）：环境 Secret DEPLOY_SSH_KEY（只能调用部署入口、只能操作本服务）；
+# 环境变量 DEPLOY_HOST（deploy@<IP>）、DEPLOY_KNOWN_HOSTS。部署记录由 GitHub 按 environment 自动生成（仓库首页 Deployments）。
 name: server-release
 
 on:
@@ -81,6 +82,7 @@ jobs:
     name: 构建与部署
     needs: gate
     runs-on: ubuntu-latest
+    environment: production                # 部署钥匙只在这个环境里，且只允许 main 分支使用
     steps:
       - uses: actions/checkout@v5
         with: { ref: "${{ needs.gate.outputs.tag }}", fetch-depth: 0 }
@@ -93,16 +95,6 @@ jobs:
           printf '%s\n' "$KH" > ~/.ssh/known_hosts
           printf 'Host deploy-target\n  HostName %s\n  User %s\n  IdentityFile ~/.ssh/deploy\n  IdentitiesOnly yes\n  StrictHostKeyChecking yes\n  ServerAliveInterval 30\n' "${H#*@}" "${H%@*}" > ~/.ssh/config
           ssh deploy-target version
-      - name: 记录部署开始（GitHub Deployments）
-        id: dep
-        continue-on-error: true
-        env: { GH_TOKEN: "${{ github.token }}", T: "${{ needs.gate.outputs.tag }}" }
-        run: |
-          id=$(jq -n --arg ref "$T" --arg d "${{ inputs.service }} $T" \
-                '{ref:$ref, environment:"production", description:$d, auto_merge:false, required_contexts:[]}' \
-                | gh api -X POST "repos/${{ github.repository }}/deployments" --input - --jq .id)
-          echo "id=$id" >> "$GITHUB_OUTPUT"
-          gh api -X POST "repos/${{ github.repository }}/deployments/$id/statuses" -f state=in_progress >/dev/null
       - name: 镜像：服务器已有就跳过；否则从 tag 构建（与 deploy.sh 同一套上下文准备）并上传
         env: { T: "${{ needs.gate.outputs.tag }}", N: "${{ inputs.service }}" }
         run: |
@@ -115,12 +107,6 @@ jobs:
           time (docker save "$N:$T" | gzip -1 | ssh deploy-target load "$N" "$T")
       - name: 部署
         env: { T: "${{ needs.gate.outputs.tag }}", N: "${{ inputs.service }}" }
-        run: ssh deploy-target deploy "$N" "$T" "as=gh-${{ github.actor }}"
-      - name: 记录部署结果
-        if: always() && steps.dep.outputs.id
-        continue-on-error: true
-        env: { GH_TOKEN: "${{ github.token }}" }
         run: |
-          s=$([[ "${{ job.status }}" == success ]] && echo success || echo failure)
-          gh api -X POST "repos/${{ github.repository }}/deployments/${{ steps.dep.outputs.id }}/statuses" -f state=$s >/dev/null
-          echo "部署 ${{ inputs.service }} ${{ needs.gate.outputs.tag }}：$s" >> "$GITHUB_STEP_SUMMARY"
+          ssh deploy-target deploy "$N" "$T" "as=gh-${{ github.actor }}"
+          echo "部署 $N $T：成功" >> "$GITHUB_STEP_SUMMARY"

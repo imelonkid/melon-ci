@@ -10,6 +10,7 @@ jobs:
   status:
     name: 状态
     runs-on: ubuntu-latest
+    environment: production
     steps:
       - env: { KEY: "${{ secrets.DEPLOY_SSH_KEY }}", KH: "${{ vars.DEPLOY_KNOWN_HOSTS }}", H: "${{ vars.DEPLOY_HOST }}" }
         run: |

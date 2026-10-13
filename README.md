@@ -28,7 +28,7 @@ jobs:
 
 约定：`scripts/ci-test.sh` 存在就跑；`deploy/Dockerfile` 存在就构建镜像（`deploy/prepare-context.sh` 用来准备构建上下文）。
 
-发布 / 回滚需要仓库里有：Secret `DEPLOY_SSH_KEY`（主机部署入口的钥匙，只能操作本服务）、变量 `DEPLOY_HOST`（`deploy@<IP>`）与 `DEPLOY_KNOWN_HOSTS`。部署入口 deploy-agent 在私有运维仓库里。
+发布 / 回滚需要仓库里有 `production` 环境（只允许 main 分支，需要 GitHub Pro 才能在私有仓库使用）：环境 Secret `DEPLOY_SSH_KEY`（主机部署入口的钥匙，只能操作本服务）、环境变量 `DEPLOY_HOST`（`deploy@<IP>`）与 `DEPLOY_KNOWN_HOSTS`。部署入口 deploy-agent 在私有运维仓库里。
 
 ## 版本
 
