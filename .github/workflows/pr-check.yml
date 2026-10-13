@@ -1,0 +1,89 @@
+# 可复用的 PR 检查（melon-ops 开发发布平台 P4.1）。项目里这样调用：
+#
+#   jobs:
+#     check:
+#       uses: imelonkid/melon-ci/.github/workflows/pr-check.yml@v1
+#
+# 约定（项目不用传参数，按文件是否存在决定做什么）：
+#   scripts/ci-test.sh   存在就跑：项目自己的测试入口（单元测试、服务端冒烟……），失败即红
+#   deploy/Dockerfile    存在就构建镜像（不推送）；deploy/prepare-context.sh 存在就先准备构建上下文（同 deploy.sh）
+# 另外始终检查：本次新增的提交里有没有密钥（gitleaks）、项目是否符合运维规范（melon-skills 的 project-init check.sh）
+name: pr-check
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        type: string
+        default: "20"
+
+permissions:
+  contents: read
+
+env:
+  GITLEAKS_VERSION: "8.30.1"
+
+jobs:
+  secrets:
+    name: 密钥扫描
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: gitleaks（只扫本次新增的提交）
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar -xz gitleaks
+          BASE="${{ github.event.pull_request.base.sha || github.event.before }}"
+          HEAD="${{ github.event.pull_request.head.sha || github.sha }}"
+          if [[ -n "$BASE" && "$BASE" != 0000000000000000000000000000000000000000 ]] && git cat-file -e "$BASE" 2>/dev/null; then
+            RANGE="$BASE..$HEAD"
+          else
+            RANGE="$HEAD"
+          fi
+          echo "扫描范围：$RANGE"
+          ./gitleaks git . --redact --no-banner --log-opts="$RANGE" --exit-code 1
+
+  standard:
+    name: 运维规范
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/checkout@v4
+        with: { repository: imelonkid/melon-skills, path: .melon-skills }
+      - name: project-init check.sh
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | sudo tar -xz -C /usr/local/bin gitleaks
+          echo ".melon-skills/" >> .git/info/exclude
+          # CI 里没有私有运维仓库：注册表相关的检查会显示 △，不影响结果；✗ 才失败
+          bash .melon-skills/skills/project-init/scripts/check.sh . "${{ github.event.repository.name }}"
+
+  test:
+    name: 测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: has
+        run: '[[ -f scripts/ci-test.sh ]] && echo yes=1 >> "$GITHUB_OUTPUT" || echo "没有 scripts/ci-test.sh，跳过"'
+      - if: steps.has.outputs.yes == '1'
+        uses: actions/setup-node@v4
+        with: { node-version: "${{ inputs.node-version }}" }
+      - if: steps.has.outputs.yes == '1'
+        run: corepack enable && bash scripts/ci-test.sh
+
+  image:
+    name: 镜像构建
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: has
+        run: '[[ -f deploy/Dockerfile ]] && echo yes=1 >> "$GITHUB_OUTPUT" || echo "没有 deploy/Dockerfile，跳过"'
+      - if: steps.has.outputs.yes == '1'
+        name: 构建（与 deploy.sh 同一套上下文准备，不推送）
+        run: |
+          SRC="$(mktemp -d)"; git archive HEAD | tar -x -C "$SRC"
+          TAG="ci-${GITHUB_SHA::8}"
+          CTX="$SRC"; DOCKERFILE="$SRC/deploy/Dockerfile"
+          if [[ -f "$SRC/deploy/prepare-context.sh" ]]; then source "$SRC/deploy/prepare-context.sh"; fi
+          docker build -f "$DOCKERFILE" --build-arg APP_VERSION="$TAG" -t "ci:$TAG" "$CTX"
+          docker image ls "ci:$TAG"
