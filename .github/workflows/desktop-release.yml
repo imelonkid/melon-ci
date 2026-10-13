@@ -1,0 +1,98 @@
+# 可复用：桌面端发布（开发发布平台 P4.4）。门禁 → 打 tag → macOS 构建 → 上传对象存储 + 更新版本清单 + GitHub Release。
+#
+# 项目里这样调用（见 jolly 的 .github/workflows/release-desktop.yml）：
+#   jobs:
+#     release:
+#       permissions: { contents: write, checks: read }
+#       uses: imelonkid/melon-ci/.github/workflows/desktop-release.yml@v1
+#       with: { bump: "${{ inputs.bump }}", emergency: ${{ inputs.emergency }} }
+#       secrets: inherit
+#
+# 约定：项目的发布脚本支持 `build <tag> <目录>` 与 `publish <目录>` 两种模式（模板 melon-skills project-init 的 multi-end/release-desktop.sh）。
+# production 环境需要：部署入口（DEPLOY_SSH_KEY、DEPLOY_HOST、DEPLOY_KNOWN_HOSTS），对象存储（变量 OSS_BUCKET、OSS_ENDPOINT，
+# Secret OSS_ACCESS_KEY_ID、OSS_ACCESS_KEY_SECRET：只能写该服务下载前缀的子账号）。
+name: desktop-release
+
+on:
+  workflow_call:
+    inputs:
+      tag-prefix:   { type: string, default: "desktop-v" }
+      bump:         { type: string, default: "patch" }
+      emergency:    { type: boolean, default: false }
+      script:       { type: string, default: "scripts/release-desktop.sh" }
+      node-version: { type: string, default: "20" }
+      pnpm-version: { type: string, default: "10.32.1" }
+
+permissions:
+  contents: write
+  checks: read
+
+concurrency:
+  group: release-${{ github.repository }}-desktop
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: 门禁与打 tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0, ref: main }
+      - id: tag
+        uses: imelonkid/melon-ci/.github/actions/release-gate@v1
+        with:
+          tag-prefix: ${{ inputs.tag-prefix }}
+          bump: ${{ inputs.bump }}
+          emergency: ${{ inputs.emergency }}
+          token: ${{ github.token }}
+
+  build:
+    name: 构建（macOS）
+    needs: gate
+    runs-on: macos-14                     # Apple 芯片，原生构建 arm64
+    steps:
+      - uses: actions/checkout@v5
+        with: { ref: "${{ needs.gate.outputs.tag }}", fetch-depth: 0 }
+      - uses: actions/setup-node@v5
+        with: { node-version: "${{ inputs.node-version }}" }
+      - run: corepack enable && corepack prepare "pnpm@${{ inputs.pnpm-version }}" --activate
+      - name: 构建
+        env: { T: "${{ needs.gate.outputs.tag }}" }
+        run: |
+          s=$(date +%s)
+          bash "${{ inputs.script }}" build "$T" "$RUNNER_TEMP/out"
+          echo "构建 $T：$(( $(date +%s) - s ))s，$(du -h "$RUNNER_TEMP"/out/*.dmg | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with: { name: desktop-dist, path: "${{ runner.temp }}/out", retention-days: 7 }
+
+  publish:
+    name: 发布
+    needs: [gate, build]
+    runs-on: ubuntu-latest
+    environment: production               # 部署钥匙与对象存储凭据只在这里，且只允许 main
+    steps:
+      - uses: actions/checkout@v5
+        with: { ref: "${{ needs.gate.outputs.tag }}", fetch-depth: 0 }
+      - uses: actions/download-artifact@v4
+        with: { name: desktop-dist, path: "${{ runner.temp }}/out" }
+      - name: 连接部署入口
+        env: { KEY: "${{ secrets.DEPLOY_SSH_KEY }}", KH: "${{ vars.DEPLOY_KNOWN_HOSTS }}", H: "${{ vars.DEPLOY_HOST }}" }
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
+          printf '%s\n' "$KH" > ~/.ssh/known_hosts
+          printf 'Host deploy-target\n  HostName %s\n  User %s\n  IdentityFile ~/.ssh/deploy\n  IdentitiesOnly yes\n  StrictHostKeyChecking yes\n' "${H#*@}" "${H%@*}" > ~/.ssh/config
+          ssh deploy-target version
+      - name: 上传安装包、更新版本清单、GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_SSH: deploy-target
+          OSS_BUCKET: ${{ vars.OSS_BUCKET }}
+          OSS_ENDPOINT: ${{ vars.OSS_ENDPOINT }}
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+        run: |
+          [[ -n "$OSS_BUCKET" && -n "$OSS_ACCESS_KEY_ID" ]] || { echo "::error::production 环境缺对象存储配置（OSS_BUCKET / OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET）"; exit 1; }
+          bash "${{ inputs.script }}" publish "$RUNNER_TEMP/out" | tee -a "$GITHUB_STEP_SUMMARY"

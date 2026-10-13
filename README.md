@@ -10,7 +10,9 @@ melonkid 各项目共用的 GitHub Actions 可复用流水线（开发发布平�
 | [`server-release.yml`](.github/workflows/server-release.yml) | 服务端发布：门禁（发布窗口、main 的 CI 必须绿）→ 打 tag → 构建 → 经部署入口上传并部署 → GitHub Deployments 记录 | ✅ |
 | [`server-rollback.yml`](.github/workflows/server-rollback.yml) | 服务端回滚（不受窗口限制，秒级） | ✅ |
 | [`server-status.yml`](.github/workflows/server-status.yml) | 线上版本与最近部署事件 | ✅ |
-| `desktop-release.yml` / `harmony-release.yml` | 客户端发布 | P4.4 |
+| [`desktop-release.yml`](.github/workflows/desktop-release.yml) | 桌面端发布：门禁 → macOS 构建 → 对象存储 + 版本清单 + GitHub Release | ✅ |
+| [`actions/release-gate`](.github/actions/release-gate/action.yml) | 各端共用的发布门禁：发布窗口、main CI 全绿、打 tag | ✅ |
+| `harmony-release.yml` | 鸿蒙发布 | 待 AGC 证书 |
 
 ## 使用
 

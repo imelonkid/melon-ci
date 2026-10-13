@@ -1,0 +1,56 @@
+# 发布门禁 + 打 tag（各端共用）：发布窗口、main 的 CI 必须全绿、按前缀算下一个版本号并推 tag。
+# 调用前要 actions/checkout（ref: main，fetch-depth: 0），job 需要 contents: write、checks: read。
+name: release-gate
+description: 发布窗口、main CI 全绿、打 tag
+inputs:
+  tag-prefix: { description: "tag 前缀，如 server-v / desktop-v", required: true }
+  bump:       { description: "patch | minor | major | 已有 tag", required: true }
+  emergency:  { description: "紧急变更（跳过发布窗口）", default: "false" }
+  token:      { description: "GITHUB_TOKEN", required: true }
+outputs:
+  tag: { description: "本次发布的 tag", value: "${{ steps.tag.outputs.tag }}" }
+  new: { description: "1 = 新打的 tag", value: "${{ steps.tag.outputs.new }}" }
+  prev: { description: "上一个版本的 tag", value: "${{ steps.tag.outputs.prev }}" }
+runs:
+  using: composite
+  steps:
+    - name: 发布窗口（08–23 点，北京时间）
+      if: ${{ inputs.emergency != 'true' }}
+      shell: bash
+      run: |
+        h=$(TZ=Asia/Shanghai date +%H); h=$((10#$h))
+        if (( h < 8 || h >= 23 )); then echo "::error::现在不在发布窗口（08–23 点）。紧急变更勾选 emergency，并在 24 小时内补复盘"; exit 1; fi
+    - name: main 最新提交的 CI 必须是绿的
+      shell: bash
+      env: { GH_TOKEN: "${{ inputs.token }}" }
+      run: |
+        sha=$(git rev-parse HEAD)
+        runs=$(gh api "repos/${{ github.repository }}/commits/$sha/check-runs?per_page=100" --jq '[.check_runs[] | select(.name | startswith("check /"))]')
+        n=$(jq length <<<"$runs"); bad=$(jq '[.[] | select(.conclusion != "success")] | length' <<<"$runs")
+        echo "main@${sha::8}：CI 检查 $n 项，未通过 $bad 项"
+        (( n > 0 )) || { echo "::error::main 最新提交没有 CI 结果（等 CI 跑完再发）"; exit 1; }
+        (( bad == 0 )) || { jq -r '.[] | "  \(.name)：\(.status) \(.conclusion)"' <<<"$runs"; echo "::error::main 的 CI 没通过，不能发布"; exit 1; }
+    - name: 定 tag
+      id: tag
+      shell: bash
+      env: { P: "${{ inputs.tag-prefix }}", B: "${{ inputs.bump }}" }
+      run: |
+        git fetch -q --tags
+        last=$(git tag -l "${P}[0-9]*.[0-9]*.[0-9]*" --sort=-v:refname | head -1)
+        case "$B" in
+          patch|minor|major)
+            base=${last:-${P}0.0.0}
+            IFS=. read -r ma mi pa <<<"${base#"$P"}"
+            case "$B" in major) t="${P}$((ma+1)).0.0";; minor) t="${P}$ma.$((mi+1)).0";; patch) t="${P}$ma.$mi.$((pa+1))";; esac
+            git config user.name "github-actions[bot]"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$t" -m "release $t（${{ github.actor }} 经 GitHub Actions 发布）"
+            git push -q origin "$t"
+            echo "新版本 $t（上一版 ${last:-无}）" >> "$GITHUB_STEP_SUMMARY"
+            echo "new=1" >> "$GITHUB_OUTPUT"; echo "prev=$last" >> "$GITHUB_OUTPUT" ;;
+          "$P"[0-9]*)
+            git rev-parse -q --verify "refs/tags/$B" >/dev/null || { echo "::error::tag $B 不存在"; exit 1; }
+            t="$B"; echo "new=0" >> "$GITHUB_OUTPUT"
+            echo "prev=$(git tag -l "${P}[0-9]*" --sort=-v:refname | grep -A1 -x "$t" | tail -n +2 | head -1)" >> "$GITHUB_OUTPUT" ;;
+          *) echo "::error::bump 要是 patch / minor / major 或已有的 ${P}X.Y.Z"; exit 1 ;;
+        esac
+        echo "tag=$t" >> "$GITHUB_OUTPUT"
