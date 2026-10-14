@@ -1,7 +1,7 @@
 # 可复用：服务端回滚（开发发布平台 P4.3）。不受发布窗口限制、不需要门禁，秒级。
 #   jobs:
 #     rollback:
-#       uses: imelonkid/melon-ci/.github/workflows/server-rollback.yml@v1
+#       uses: imelonkid/melon-ci/.github/workflows/server-rollback.yml@v2
 #       with: { service: jolly, tag: "${{ inputs.tag }}" }   # tag 留空 = 上一个成功上线的版本
 #       secrets: inherit
 name: server-rollback

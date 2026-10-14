@@ -5,7 +5,7 @@
 # 项目里这样调用（见 jolly 的 .github/workflows/release.yml）：
 #   jobs:
 #     release:
-#       uses: imelonkid/melon-ci/.github/workflows/server-release.yml@v1
+#       uses: imelonkid/melon-ci/.github/workflows/server-release.yml@v2
 #       with: { service: jolly, tag-prefix: server-v, bump: "${{ inputs.bump }}", emergency: ${{ inputs.emergency }} }
 #       secrets: inherit
 #
@@ -46,7 +46,7 @@ jobs:
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, ref: main }
       - id: tag
-        uses: imelonkid/melon-ci/.github/actions/release-gate@v1
+        uses: imelonkid/melon-ci/.github/actions/release-gate@v2
         with:
           tag-prefix: ${{ inputs.tag-prefix }}
           bump: ${{ inputs.bump }}

@@ -2,7 +2,7 @@
 #
 #   jobs:
 #     check:
-#       uses: imelonkid/melon-ci/.github/workflows/pr-check.yml@v1
+#       uses: imelonkid/melon-ci/.github/workflows/pr-check.yml@v2
 #
 # 约定（项目不用传参数，按文件是否存在决定做什么）：
 #   scripts/ci-test.sh   存在就跑：项目自己的测试入口（单元测试、服务端冒烟……），失败即红
