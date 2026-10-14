@@ -11,8 +11,8 @@
 #
 # 仓库需要 production 环境（只允许 main 分支）：环境 Secret DEPLOY_SSH_KEY（只能调用部署入口、只能操作本服务）；
 # 环境变量 DEPLOY_HOST（deploy@<IP>）、DEPLOY_KNOWN_HOSTS。部署记录由 GitHub 按 environment 自动生成（仓库首页 Deployments）。
-# 镜像仓库（推荐）：环境变量 ACR_REGISTRY、ACR_USERNAME，环境 Secret ACR_PASSWORD。有就「推仓库 → 主机按摘要拉取」；
-# 没有就退回「经 SSH 上传镜像」（从海外传国内很慢，实测约 100MB / 50 分钟）。
+# 镜像仓库（v2 起必需，项目基线 v1）：环境变量 ACR_REGISTRY、ACR_USERNAME，环境 Secret ACR_PASSWORD。
+# 推仓库 → 主机按摘要拉取。没配直接失败：不再退回「经 SSH 上传」（从海外传国内很慢，实测约 100MB / 50 分钟）。
 name: server-release
 
 on:
@@ -78,7 +78,7 @@ jobs:
           if [[ -f "$SRC/deploy/prepare-context.sh" ]]; then source "$SRC/deploy/prepare-context.sh"; fi
           docker build -f "$DOCKERFILE" --build-arg APP_VERSION="$T" -t "$N:$T" "$CTX"
           echo "镜像 $N:$T $(docker image inspect "$N:$T" --format '{{.Size}}' | numfmt --to=iec)" >> "$GITHUB_STEP_SUMMARY"
-      - name: 交付镜像（推镜像仓库，或经 SSH 上传）
+      - name: 交付镜像（推镜像仓库）
         id: ship
         env:
           T: "${{ needs.gate.outputs.tag }}"
@@ -88,22 +88,18 @@ jobs:
           U: "${{ vars.ACR_USERNAME }}"
           PW: "${{ secrets.ACR_PASSWORD }}"
         run: |
-          if [[ -n "$REG" && -n "$U" && -n "$PW" ]]; then
-            printf '%s' "$PW" | docker login --username "$U" --password-stdin "$REG" >/dev/null
-            R="$REG/$NS/$N"
-            docker tag "$N:$T" "$R:$T"
-            s=$(date +%s); docker push -q "$R:$T" >/dev/null; e=$(( $(date +%s) - s ))
-            D=$(docker image inspect "$R:$T" --format '{{range .RepoDigests}}{{println .}}{{end}}' | grep "^$R@" | head -1 | cut -d@ -f2)
-            [[ "$D" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "::error::拿不到推送后的镜像摘要"; exit 1; }
-            echo "digest=$D" >> "$GITHUB_OUTPUT"
-            echo "推送到镜像仓库：${e}s，摘要 ${D:0:19}…" | tee -a "$GITHUB_STEP_SUMMARY"
-          elif ssh deploy-target has "$N" "$T"; then
-            echo "服务器已有 $N:$T，跳过上传"
-          else
-            echo "::warning::没有配置镜像仓库，经 SSH 上传（从海外传国内很慢）"
-            s=$(date +%s); docker save "$N:$T" | gzip -1 | ssh deploy-target load "$N" "$T"
-            echo "经 SSH 上传：$(( $(date +%s) - s ))s" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [[ -z "$REG" || -z "$U" || -z "$PW" ]]; then
+            echo "::error::没有配置镜像仓库（production 环境的 ACR_REGISTRY、ACR_USERNAME 与 Secret ACR_PASSWORD）。项目基线 v1 要求所有镜像进镜像仓库"
+            exit 1
           fi
+          printf '%s' "$PW" | docker login --username "$U" --password-stdin "$REG" >/dev/null
+          R="$REG/$NS/$N"
+          docker tag "$N:$T" "$R:$T"
+          s=$(date +%s); docker push -q "$R:$T" >/dev/null; e=$(( $(date +%s) - s ))
+          D=$(docker image inspect "$R:$T" --format '{{range .RepoDigests}}{{println .}}{{end}}' | grep "^$R@" | head -1 | cut -d@ -f2)
+          [[ "$D" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "::error::拿不到推送后的镜像摘要"; exit 1; }
+          echo "digest=$D" >> "$GITHUB_OUTPUT"
+          echo "推送到镜像仓库：${e}s，摘要 ${D:0:19}…" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: 部署
         env: { T: "${{ needs.gate.outputs.tag }}", N: "${{ inputs.service }}", D: "${{ steps.ship.outputs.digest }}" }
         run: |

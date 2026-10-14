@@ -25,16 +25,21 @@ on:
     branches: [main]
 jobs:
   check:
-    uses: imelonkid/melon-ci/.github/workflows/pr-check.yml@v1
+    uses: imelonkid/melon-ci/.github/workflows/pr-check.yml@v2
 ```
 
 约定：`scripts/ci-test.sh` 存在就跑；`deploy/Dockerfile` 存在就构建镜像（`deploy/prepare-context.sh` 用来准备构建上下文）。
 
-发布 / 回滚需要仓库里有 `production` 环境（只允许 main 分支，需要 GitHub Pro 才能在私有仓库使用）：环境 Secret `DEPLOY_SSH_KEY`（主机部署入口的钥匙，只能操作本服务）、环境变量 `DEPLOY_HOST`（`deploy@<IP>`）与 `DEPLOY_KNOWN_HOSTS`。部署入口 deploy-agent 在私有运维仓库里。
+发布 / 回滚需要仓库里有 `production` 环境（只允许 main 分支，需要 GitHub Pro 才能在私有仓库使用）：环境 Secret `DEPLOY_SSH_KEY`（主机部署入口的钥匙，只能操作本服务）、环境变量 `DEPLOY_HOST`（`deploy@<IP>`）与 `DEPLOY_KNOWN_HOSTS`；**镜像仓库（v2 起必需）**：环境变量 `ACR_REGISTRY`、`ACR_USERNAME`，环境 Secret `ACR_PASSWORD`。部署入口 deploy-agent 在私有运维仓库里。
 
 ## 版本
 
-调用方固定在 `@v1`。不兼容的改动发 `v2`；兼容的改动把 `v1` 移到新提交。
+调用方固定在主版本（`@v2`）。不兼容的改动发新的主版本；兼容的改动把当前主版本 tag 移到新提交。
+
+| 版本 | 变化 |
+|---|---|
+| `v2`（2026-10-14） | 服务端发布**必须配镜像仓库**（项目基线 v1）：没配直接失败，去掉「经 SSH 上传镜像」的回退 |
+| `v1` | 首版；不再更新 |
 
 ## License
 
