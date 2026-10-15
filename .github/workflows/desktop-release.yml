@@ -9,8 +9,10 @@
 #       secrets: inherit
 #
 # 约定：项目的发布脚本支持 `build <tag> <目录>` 与 `publish <目录>` 两种模式（模板 melon-skills project-init 的 multi-end/release-desktop.sh）。
-# production 环境需要：部署入口（DEPLOY_SSH_KEY、DEPLOY_HOST、DEPLOY_KNOWN_HOSTS），对象存储（变量 OSS_BUCKET、OSS_ENDPOINT，
-# Secret OSS_ACCESS_KEY_ID、OSS_ACCESS_KEY_SECRET：只能写该服务下载前缀的子账号）。
+# production 环境需要：对象存储（变量 OSS_BUCKET、OSS_ENDPOINT，Secret OSS_ACCESS_KEY_ID、OSS_ACCESS_KEY_SECRET：只能写该项目下载前缀的子账号）；
+# manifest: deploy（默认，多端项目）时版本清单经部署入口放到服务端下载站，还要部署入口（DEPLOY_SSH_KEY、DEPLOY_HOST、DEPLOY_KNOWN_HOSTS）；
+# manifest: oss（独立桌面应用，没有服务端）时版本清单也放 OSS，不需要部署入口。
+# go-version：构建前装 Go（比如从源码编译随应用分发的命令行工具），不填不装。
 name: desktop-release
 
 on:
@@ -21,6 +23,8 @@ on:
       emergency:    { type: boolean, default: false }
       script:       { type: string, default: "scripts/release-desktop.sh" }
       node-version: { type: string, default: "20" }
+      manifest:     { type: string, default: "deploy" }   # deploy | oss（见上）
+      go-version:   { type: string, default: "" }
       pnpm-version: { type: string, default: "10.32.1" }
 
 permissions:
@@ -58,6 +62,9 @@ jobs:
       - uses: actions/setup-node@v5
         with: { node-version: "${{ inputs.node-version }}" }
       - run: corepack enable && corepack prepare "pnpm@${{ inputs.pnpm-version }}" --activate
+      - if: inputs.go-version != ''
+        uses: actions/setup-go@v5
+        with: { go-version: "${{ inputs.go-version }}", cache: false }
       - name: 构建
         env: { T: "${{ needs.gate.outputs.tag }}" }
         run: |
@@ -78,6 +85,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with: { name: desktop-dist, path: "${{ runner.temp }}/out" }
       - name: 连接部署入口
+        if: inputs.manifest == 'deploy'
         env: { KEY: "${{ secrets.DEPLOY_SSH_KEY }}", KH: "${{ vars.DEPLOY_KNOWN_HOSTS }}", H: "${{ vars.DEPLOY_HOST }}" }
         run: |
           install -d -m 700 ~/.ssh
@@ -89,6 +97,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           DEPLOY_SSH: deploy-target
+          MANIFEST: ${{ inputs.manifest }}
           OSS_BUCKET: ${{ vars.OSS_BUCKET }}
           OSS_ENDPOINT: ${{ vars.OSS_ENDPOINT }}
           OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
