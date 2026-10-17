@@ -1,0 +1,90 @@
+# 可复用：微信小程序发布（项目基线「小程序端」）。门禁 → 打 tag → 构建 → 经部署入口在固定 IP 主机上传为体验版 → GitHub Release。
+#
+# 项目里这样调用（模板 melon-skills project-init 的 multi-end/release-mp.yml）：
+#   jobs:
+#     release:
+#       permissions: { contents: write, checks: read }
+#       uses: imelonkid/melon-ci/.github/workflows/mp-release.yml@v2
+#       with: { bump: "${{ inputs.bump }}", emergency: ${{ inputs.emergency }} }
+#       secrets: inherit
+#
+# 约定：项目的发布脚本支持 `build <tag> <目录>` 与 `publish <目录>`（模板 multi-end/release-mp.sh）。
+# production 环境需要上传主机的部署入口：变量 MP_DEPLOY_HOST（deploy@<IP>）、MP_DEPLOY_KNOWN_HOSTS，Secret MP_DEPLOY_SSH_KEY
+# （只能操作该小程序的钥匙）。微信的代码上传密钥只在上传主机上，不经过这里。
+name: mp-release
+
+on:
+  workflow_call:
+    inputs:
+      tag-prefix:   { type: string, default: "mp-v" }
+      bump:         { type: string, default: "patch" }
+      emergency:    { type: boolean, default: false }
+      script:       { type: string, default: "scripts/release-mp.sh" }
+      node-version: { type: string, default: "22" }
+      pnpm-version: { type: string, default: "10.32.1" }
+
+permissions:
+  contents: write
+  checks: read
+
+concurrency:
+  group: release-${{ github.repository }}-mp
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: 门禁与打 tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0, ref: main }
+      - id: tag
+        uses: imelonkid/melon-ci/.github/actions/release-gate@v2
+        with:
+          tag-prefix: ${{ inputs.tag-prefix }}
+          bump: ${{ inputs.bump }}
+          emergency: ${{ inputs.emergency }}
+          token: ${{ github.token }}
+
+  build:
+    name: 构建
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with: { ref: "${{ needs.gate.outputs.tag }}", fetch-depth: 0 }
+      - uses: actions/setup-node@v5
+        with: { node-version: "${{ inputs.node-version }}" }
+      - run: corepack enable && corepack prepare "pnpm@${{ inputs.pnpm-version }}" --activate
+      - name: 构建
+        env: { T: "${{ needs.gate.outputs.tag }}" }
+        run: |
+          bash "${{ inputs.script }}" build "$T" "$RUNNER_TEMP/out"
+          echo "构建 $T：$(jq -r '.size_kb' "$RUNNER_TEMP/out/meta.json") KB" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with: { name: mp-dist, path: "${{ runner.temp }}/out", retention-days: 7 }
+
+  publish:
+    name: 上传体验版
+    needs: [gate, build]
+    runs-on: ubuntu-latest
+    environment: production               # 上传主机的部署钥匙只在这里，且只允许 main
+    steps:
+      - uses: actions/checkout@v5
+        with: { ref: "${{ needs.gate.outputs.tag }}", fetch-depth: 0 }
+      - uses: actions/download-artifact@v4
+        with: { name: mp-dist, path: "${{ runner.temp }}/out" }
+      - name: 连接上传主机的部署入口
+        env: { KEY: "${{ secrets.MP_DEPLOY_SSH_KEY }}", KH: "${{ vars.MP_DEPLOY_KNOWN_HOSTS }}", H: "${{ vars.MP_DEPLOY_HOST }}" }
+        run: |
+          [[ -n "$KEY" && -n "$H" ]] || { echo "::error::production 环境缺 MP_DEPLOY_HOST / MP_DEPLOY_SSH_KEY（上传主机的部署入口）"; exit 1; }
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/mp && chmod 600 ~/.ssh/mp
+          printf '%s\n' "$KH" > ~/.ssh/known_hosts
+          printf 'Host mp-target\n  HostName %s\n  User %s\n  IdentityFile ~/.ssh/mp\n  IdentitiesOnly yes\n  StrictHostKeyChecking yes\n' "${H#*@}" "${H%@*}" > ~/.ssh/config
+          ssh mp-target version
+      - name: 上传体验版、GitHub Release
+        env: { GH_TOKEN: "${{ github.token }}", DEPLOY_SSH: mp-target }
+        run: bash "${{ inputs.script }}" publish "$RUNNER_TEMP/out" | tee -a "$GITHUB_STEP_SUMMARY"
