@@ -25,7 +25,18 @@ runs:
       env: { GH_TOKEN: "${{ inputs.token }}" }
       run: |
         sha=$(git rev-parse HEAD)
-        runs=$(gh api "repos/${{ github.repository }}/commits/$sha/check-runs?per_page=100" --jq '[.check_runs[] | select(.name | startswith("check /"))]')
+        all=$(gh api "repos/${{ github.repository }}/commits/$sha/check-runs?per_page=100" --jq '[.check_runs[] | select(.name | startswith("check /"))]')
+        # 与分支保护口径一致：main 开了分支保护就只要求它声明的必过检查（每一项都要有、都要绿）；没开就要求全部 check /
+        req=$(gh api "repos/${{ github.repository }}/branches/main" --jq '[.protection.required_status_checks.contexts[]? | select(startswith("check /"))]' 2>/dev/null || echo '[]')
+        if (( $(jq length <<<"$req") > 0 )); then
+          runs=$(jq --argjson r "$req" '[.[] | select(.name as $n | $r | index($n))]' <<<"$all")
+          missing=$(jq -r --argjson have "$(jq '[.[].name]' <<<"$runs")" '.[] | select(. as $n | $have | index($n) | not)' <<<"$req")
+          [[ -z "$missing" ]] || { echo "::error::main 最新提交缺少必过检查：$missing（等 CI 跑完再发）"; exit 1; }
+          echo "按分支保护的必过检查（$(jq length <<<"$req") 项）"
+          jq -r --argjson r "$req" '.[] | select(.name as $n | $r | index($n) | not) | select(.conclusion != "success") | "::notice::非必过检查未通过：\(.name)（不拦发布）"' <<<"$all"
+        else
+          runs="$all"
+        fi
         n=$(jq length <<<"$runs"); bad=$(jq '[.[] | select(.conclusion != "success")] | length' <<<"$runs")
         echo "main@${sha::8}：CI 检查 $n 项，未通过 $bad 项"
         (( n > 0 )) || { echo "::error::main 最新提交没有 CI 结果（等 CI 跑完再发）"; exit 1; }
