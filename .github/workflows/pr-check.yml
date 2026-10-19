@@ -23,6 +23,12 @@ permissions:
 env:
   GITLEAKS_VERSION: "8.30.1"
 
+# 显式用 bash：GitHub 会带上 -eo pipefail，管道里任何一步失败整个步骤就失败（默认 shell 不带 pipefail，
+# 「脚本 | tee 摘要」会把脚本失败吞掉——2026-10-19 小程序上传失败却显示成功）
+defaults:
+  run:
+    shell: bash
+
 jobs:
   secrets:
     name: 密钥扫描

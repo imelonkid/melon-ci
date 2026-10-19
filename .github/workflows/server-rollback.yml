@@ -20,6 +20,12 @@ concurrency:
   group: release-${{ github.repository }}-${{ inputs.service }}
   cancel-in-progress: false
 
+# 显式用 bash：GitHub 会带上 -eo pipefail，管道里任何一步失败整个步骤就失败（默认 shell 不带 pipefail，
+# 「脚本 | tee 摘要」会把脚本失败吞掉——2026-10-19 小程序上传失败却显示成功）
+defaults:
+  run:
+    shell: bash
+
 jobs:
   rollback:
     name: 回滚
@@ -38,4 +44,4 @@ jobs:
         run: |
           [[ -z "$T" || "$T" =~ ^[A-Za-z-]*v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::tag 不合法：$T"; exit 1; }
           ssh deploy-target rollback "$N" $T "as=gh-${{ github.actor }}"
-          ssh deploy-target status "$N" | head -3 | tee -a "$GITHUB_STEP_SUMMARY"
+          { ssh deploy-target status "$N" | head -3 || true; } | tee -a "$GITHUB_STEP_SUMMARY"   # 只是展示：head 提前退出不算失败
