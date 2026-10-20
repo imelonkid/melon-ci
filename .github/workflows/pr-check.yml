@@ -7,6 +7,9 @@
 # 约定（项目不用传参数，按文件是否存在决定做什么）：
 #   scripts/ci-test.sh   存在就跑：项目自己的测试入口（单元测试、服务端冒烟……），失败即红
 #   deploy/Dockerfile    存在就构建镜像（不推送）；deploy/prepare-context.sh 存在就先准备构建上下文（同 deploy.sh）
+# 私有包（@imelonkid/common，GitHub Packages）：测试与镜像构建都带读包令牌——
+#   测试步骤有环境变量 NODE_AUTH_TOKEN（项目的 .npmrc 引用它）；镜像构建传 BuildKit secret npm_token
+#   （Dockerfile：RUN --mount=type=secret,id=npm_token NODE_AUTH_TOKEN=$(cat /run/secrets/npm_token) npm ci）
 # 另外始终检查：本次新增的提交里有没有密钥（gitleaks）、项目是否符合运维规范（melon-skills 的 project-init check.sh）
 name: pr-check
 
@@ -19,6 +22,7 @@ on:
 
 permissions:
   contents: read
+  packages: read        # 读私有包（仓库默认令牌就有，不用调用方额外授予）
 
 env:
   GITLEAKS_VERSION: "8.30.1"
@@ -75,6 +79,7 @@ jobs:
         uses: actions/setup-node@v5
         with: { node-version: "${{ inputs.node-version }}" }
       - if: steps.has.outputs.yes == '1'
+        env: { NODE_AUTH_TOKEN: "${{ github.token }}" }
         run: corepack enable && bash scripts/ci-test.sh
 
   image:
@@ -86,10 +91,12 @@ jobs:
         run: '[[ -f deploy/Dockerfile ]] && echo yes=1 >> "$GITHUB_OUTPUT" || echo "没有 deploy/Dockerfile，跳过"'
       - if: steps.has.outputs.yes == '1'
         name: 构建（与 deploy.sh 同一套上下文准备，不推送）
+        env: { NODE_AUTH_TOKEN: "${{ github.token }}" }
         run: |
           SRC="$(mktemp -d)"; git archive HEAD | tar -x -C "$SRC"
           TAG="ci-${GITHUB_SHA::8}"
           CTX="$SRC"; DOCKERFILE="$SRC/deploy/Dockerfile"
           if [[ -f "$SRC/deploy/prepare-context.sh" ]]; then source "$SRC/deploy/prepare-context.sh"; fi
-          docker build -f "$DOCKERFILE" --build-arg APP_VERSION="$TAG" -t "ci:$TAG" "$CTX"
+          ( umask 077; printf '%s' "$NODE_AUTH_TOKEN" > "$RUNNER_TEMP/npm_token" )
+          docker build -f "$DOCKERFILE" --build-arg APP_VERSION="$TAG" --secret id=npm_token,src="$RUNNER_TEMP/npm_token" -t "ci:$TAG" "$CTX"
           docker image ls "ci:$TAG"

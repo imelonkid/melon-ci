@@ -6,6 +6,7 @@ inputs:
   tag-prefix: { description: "tag 前缀，如 server-v / desktop-v", required: true }
   bump:       { description: "patch | minor | major | 已有 tag", required: true }
   emergency:  { description: "紧急变更（跳过发布窗口）", default: "false" }
+  check-window: { description: "检查发布窗口（库不上线，传 false）", default: "true" }
   token:      { description: "GITHUB_TOKEN", required: true }
 outputs:
   tag: { description: "本次发布的 tag", value: "${{ steps.tag.outputs.tag }}" }
@@ -15,7 +16,7 @@ runs:
   using: composite
   steps:
     - name: 发布窗口（08–23 点，北京时间）
-      if: ${{ inputs.emergency != 'true' }}
+      if: ${{ inputs.emergency != 'true' && inputs.check-window != 'false' }}
       shell: bash
       run: |
         h=$(TZ=Asia/Shanghai date +%H); h=$((10#$h))

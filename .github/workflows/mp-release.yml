@@ -23,9 +23,7 @@ on:
       node-version: { type: string, default: "22" }
       pnpm-version: { type: string, default: "10.32.1" }
 
-permissions:
-  contents: write
-  checks: read
+# 不在这里声明 permissions：继承调用方授予的（contents: write, checks: read；用了私有包的再加 packages: read）
 
 concurrency:
   group: release-${{ github.repository }}-mp
@@ -65,7 +63,7 @@ jobs:
         with: { node-version: "${{ inputs.node-version }}" }
       - run: corepack enable && corepack prepare "pnpm@${{ inputs.pnpm-version }}" --activate
       - name: 构建
-        env: { T: "${{ needs.gate.outputs.tag }}" }
+        env: { T: "${{ needs.gate.outputs.tag }}", NODE_AUTH_TOKEN: "${{ github.token }}" }
         run: |
           bash "${{ inputs.script }}" build "$T" "$RUNNER_TEMP/out"
           echo "构建 $T：$(jq -r '.size_kb' "$RUNNER_TEMP/out/meta.json") KB" >> "$GITHUB_STEP_SUMMARY"

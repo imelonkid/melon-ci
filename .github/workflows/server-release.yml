@@ -26,10 +26,8 @@ on:
     outputs:
       tag: { value: "${{ jobs.gate.outputs.tag }}" }
 
-permissions:
-  contents: write
-  checks: read
-  deployments: write
+# 不在这里声明 permissions：继承调用方授予的（调用方写 contents: write, checks: read, deployments: write；
+# 用了私有包的再加 packages: read）。被调用方多要一项而调用方没给，整条流水线会起不来，所以由调用方决定。
 
 concurrency:
   group: release-${{ github.repository }}-${{ inputs.service }}
@@ -77,12 +75,14 @@ jobs:
           printf 'Host deploy-target\n  HostName %s\n  User %s\n  IdentityFile ~/.ssh/deploy\n  IdentitiesOnly yes\n  StrictHostKeyChecking yes\n  ServerAliveInterval 30\n' "${H#*@}" "${H%@*}" > ~/.ssh/config
           ssh deploy-target version
       - name: 构建镜像（从 tag 的内容，与 deploy.sh 同一套上下文准备）
-        env: { T: "${{ needs.gate.outputs.tag }}", N: "${{ inputs.service }}" }
+        env: { T: "${{ needs.gate.outputs.tag }}", N: "${{ inputs.service }}", NODE_AUTH_TOKEN: "${{ github.token }}" }
         run: |
           SRC="$(mktemp -d)"; git archive "$T" | tar -x -C "$SRC"
           CTX="$SRC"; DOCKERFILE="$SRC/deploy/Dockerfile"; TAG="$T"
           if [[ -f "$SRC/deploy/prepare-context.sh" ]]; then source "$SRC/deploy/prepare-context.sh"; fi
-          docker build -f "$DOCKERFILE" --build-arg APP_VERSION="$T" -t "$N:$T" "$CTX"
+          # 私有包的读包令牌以 BuildKit secret 传入，不进镜像层（Dockerfile 不用就忽略）
+          ( umask 077; printf '%s' "$NODE_AUTH_TOKEN" > "$RUNNER_TEMP/npm_token" )
+          docker build -f "$DOCKERFILE" --build-arg APP_VERSION="$T" --secret id=npm_token,src="$RUNNER_TEMP/npm_token" -t "$N:$T" "$CTX"
           echo "镜像 $N:$T $(docker image inspect "$N:$T" --format '{{.Size}}' | numfmt --to=iec)" >> "$GITHUB_STEP_SUMMARY"
       - name: 交付镜像（推镜像仓库）
         id: ship

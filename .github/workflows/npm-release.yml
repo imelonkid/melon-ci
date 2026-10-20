@@ -1,0 +1,96 @@
+# 可复用：库发布到 GitHub Packages（npm）。门禁（main CI 绿）→ 打 tag → 从 tag 构建测试 → 版本号按 tag 注入 → 发包 → Release。
+#
+# 项目里这样调用（见 melon-common 的 .github/workflows/release.yml）：
+#   jobs:
+#     release:
+#       permissions: { contents: write, checks: read, packages: write }
+#       uses: imelonkid/melon-ci/.github/workflows/npm-release.yml@v2
+#       with: { bump: "${{ inputs.bump }}" }
+#
+# 约定：
+#   - package.json 的 name 是 @imelonkid/<名>，publishConfig.registry = https://npm.pkg.github.com
+#   - 仓库里的 version 永远是 0.0.0：真实版本号只来自 tag（项目基线「版本号一律构建时注入」）
+#   - scripts/ci-test.sh 存在就先跑（与 PR 检查同一套）；package.json 的 prepublishOnly 负责构建
+#   - CHANGELOG.md 里有「## vX.Y.Z」一段就作为 Release 说明
+#   - 库不上线，不检查发布窗口；bump 填已有 tag = 重新发布它（该版本已在仓库里就跳过发包）
+name: npm-release
+
+on:
+  workflow_call:
+    inputs:
+      bump:         { type: string, default: "patch" }   # patch | minor | major | 已有 tag
+      tag-prefix:   { type: string, default: "v" }
+      node-version: { type: string, default: "20" }
+    outputs:
+      tag: { value: "${{ jobs.gate.outputs.tag }}" }
+
+# 不在这里声明 permissions：继承调用方授予的（contents: write, checks: read, packages: write）
+
+concurrency:
+  group: npm-release-${{ github.repository }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  gate:
+    name: 门禁与打 tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0, ref: main }
+      - id: tag
+        uses: imelonkid/melon-ci/.github/actions/release-gate@v2
+        with:
+          tag-prefix: ${{ inputs.tag-prefix }}
+          bump: ${{ inputs.bump }}
+          check-window: "false"
+          token: ${{ github.token }}
+
+  publish:
+    name: 构建、测试、发包
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with: { ref: "${{ needs.gate.outputs.tag }}", fetch-depth: 0 }
+      - uses: actions/setup-node@v5
+        with: { node-version: "${{ inputs.node-version }}", registry-url: "https://npm.pkg.github.com" }
+      - name: 测试（scripts/ci-test.sh，与 PR 检查同一套）
+        env: { NODE_AUTH_TOKEN: "${{ github.token }}" }
+        run: |
+          if [[ -f scripts/ci-test.sh ]]; then corepack enable && bash scripts/ci-test.sh; else npm ci --no-audit --no-fund; fi
+      - name: 版本号按 tag 注入
+        id: ver
+        env: { T: "${{ needs.gate.outputs.tag }}", P: "${{ inputs.tag-prefix }}" }
+        run: |
+          V="${T#"$P"}"
+          [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::tag $T 不是 ${P}X.Y.Z"; exit 1; }
+          npm version "$V" --no-git-tag-version --allow-same-version >/dev/null
+          N=$(node -p "require('./package.json').name")
+          [[ "$N" == @imelonkid/* ]] || { echo "::error::包名 $N 必须是 @imelonkid/*（GitHub Packages 的作用域 = 仓库所有者）"; exit 1; }
+          echo "v=$V" >> "$GITHUB_OUTPUT"; echo "name=$N" >> "$GITHUB_OUTPUT"
+      - name: 发到 GitHub Packages
+        env: { NODE_AUTH_TOKEN: "${{ github.token }}", N: "${{ steps.ver.outputs.name }}", V: "${{ steps.ver.outputs.v }}" }
+        run: |
+          if npm view "$N@$V" version >/dev/null 2>&1; then
+            echo "::notice::$N@$V 已在仓库里，跳过发包（npm 不允许覆盖同一版本）"
+          else
+            npm publish
+          fi
+          echo "包 \`$N@$V\`" >> "$GITHUB_STEP_SUMMARY"
+      - name: GitHub Release
+        env: { GH_TOKEN: "${{ github.token }}", T: "${{ needs.gate.outputs.tag }}", N: "${{ steps.ver.outputs.name }}", V: "${{ steps.ver.outputs.v }}" }
+        run: |
+          gh release view "$T" >/dev/null 2>&1 && { echo "Release $T 已存在"; exit 0; }
+          notes="$RUNNER_TEMP/notes.md"
+          if [[ -f CHANGELOG.md ]]; then
+            awk -v h="## $T" 'index($0, h) == 1 {f=1; next} /^## / {f=0} f' CHANGELOG.md > "$notes"
+          fi
+          [[ -s "$notes" ]] || echo "CHANGELOG.md 里没有「## $T」一段" > "$notes"
+          printf '\n安装：`npm install --save-exact %s@%s`\n' "$N" "$V" >> "$notes"
+          gh release create "$T" --title "$T" --notes-file "$notes"

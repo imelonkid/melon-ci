@@ -12,7 +12,8 @@ melonkid 各项目共用的 GitHub Actions 可复用流水线（开发发布平�
 | [`server-status.yml`](.github/workflows/server-status.yml) | 线上版本与最近部署事件 | ✅ |
 | [`mp-release.yml`](.github/workflows/mp-release.yml) | 微信小程序发布：门禁 → 打 tag `mp-v` → 构建 → 经部署入口在固定 IP 主机上传为体验版（`mp-upload`）→ GitHub Release；提审 / 全量在微信后台 | ✅ |
 | [`desktop-release.yml`](.github/workflows/desktop-release.yml) | 桌面端发布：门禁 → macOS 构建 → 对象存储 + 版本清单 + GitHub Release。`manifest: deploy`（默认，多端项目：清单经部署入口放服务端下载站）/ `oss`（独立桌面应用：清单也放对象存储，不需要部署入口）；`go-version` 构建前装 Go | ✅ |
-| [`actions/release-gate`](.github/actions/release-gate/action.yml) | 各端共用的发布门禁：发布窗口、main CI 全绿、打 tag | ✅ |
+| [`npm-release.yml`](.github/workflows/npm-release.yml) | 库发布：门禁（main CI 绿，不查发布窗口）→ 打 tag → 测试 → 版本号按 tag 注入 → 发到 GitHub Packages → Release（说明取自 CHANGELOG） | ✅ |
+| [`actions/release-gate`](.github/actions/release-gate/action.yml) | 各端共用的发布门禁：发布窗口（`check-window: false` 可关，库用）、main CI 全绿、打 tag | ✅ |
 | `harmony-release.yml` | 鸿蒙发布 | 待 AGC 证书 |
 
 ## 使用
@@ -39,6 +40,7 @@ jobs:
 
 | 版本 | 变化 |
 |---|---|
+| `v2` 兼容更新（2026-10-20） | 新增 `npm-release`（库发布）；私有包 `@imelonkid/*`：PR 检查、服务端 / 小程序发布带读包令牌（测试与构建有 `NODE_AUTH_TOKEN`，镜像构建传 BuildKit secret `npm_token`）；发布流水线不再自己声明权限、继承调用方（用私有包的项目在发布表单加 `packages: read`）；`release-gate` 加 `check-window` |
 | `v2` 兼容更新（2026-10-17） | 新增 `mp-release`（小程序发布） |
 | `v2` 兼容更新（2026-10-15） | `desktop-release` 加 `manifest`、`go-version` 两个可选输入，默认行为不变 |
 | `v2`（2026-10-14） | 服务端发布**必须配镜像仓库**（项目基线 v1）：没配直接失败，去掉「经 SSH 上传镜像」的回退 |
