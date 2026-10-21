@@ -1,6 +1,6 @@
 # melon-ci
 
-可复用的 GitHub Actions 流水线（**公开仓库**）：PR 检查、发布 / 回滚 / 状态、桌面端发布、发布门禁。业务仓库用 `uses: imelonkid/melon-ci/...@v1` 调用。
+可复用的 GitHub Actions 流水线（**公开仓库**）：PR 检查、服务端发布 / 回滚 / 状态、桌面端发布、小程序发布、库发布（npm）、发布门禁。业务仓库用 `uses: imelonkid/melon-ci/...@v2` 调用（`v1` 不再更新）。
 
 ## 边界（强制）
 
@@ -17,4 +17,6 @@
 
 - 不写任何主机地址、IP、端口、内网网段、服务器路径；不在日志里打印 secrets
 - 步骤要有中文 `name`（门户和 Actions 页面都显示它）
+- 权限：发布流水线（`server-release`、`mp-release`、`npm-release`）不自己声明 `permissions`，继承调用方——被调用方多要一项而调用方没给，整条流水线起不来；需要的权限写在文件头注释和 README 里
+- 私有包：读包令牌只经环境变量 `NODE_AUTH_TOKEN` / BuildKit secret `npm_token` 传，不写进镜像层、不打印
 - 提交信息 `<类型>(<范围>): <中文描述>`

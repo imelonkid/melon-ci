@@ -7,7 +7,7 @@ melonkid 各项目共用的 GitHub Actions 可复用流水线（开发发布平�
 | 流水线 | 用途 | 状态 |
 |---|---|---|
 | [`pr-check.yml`](.github/workflows/pr-check.yml) | PR 检查：密钥扫描、运维规范、项目测试、镜像构建 | ✅ |
-| [`server-release.yml`](.github/workflows/server-release.yml) | 服务端发布：门禁（发布窗口、main 的 CI 必须绿）→ 打 tag → 构建 → 经部署入口上传并部署 → GitHub Deployments 记录 | ✅ |
+| [`server-release.yml`](.github/workflows/server-release.yml) | 服务端发布：门禁（发布窗口、main 的 CI 必须绿）→ 打 tag → 构建镜像 → 推镜像仓库 → 经部署入口部署 → GitHub Deployments 记录 | ✅ |
 | [`server-rollback.yml`](.github/workflows/server-rollback.yml) | 服务端回滚（不受窗口限制，秒级） | ✅ |
 | [`server-status.yml`](.github/workflows/server-status.yml) | 线上版本与最近部署事件 | ✅ |
 | [`mp-release.yml`](.github/workflows/mp-release.yml) | 微信小程序发布：门禁 → 打 tag `mp-v` → 构建 → 经部署入口在固定 IP 主机上传为体验版（`mp-upload`）→ GitHub Release；提审 / 全量在微信后台 | ✅ |
@@ -31,6 +31,27 @@ jobs:
 ```
 
 约定：`scripts/ci-test.sh` 存在就跑；`deploy/Dockerfile` 存在就构建镜像（`deploy/prepare-context.sh` 用来准备构建上下文）。
+
+发布表单（项目仓库里调用发布流水线的 workflow）要自己写 `permissions`——`server-release`、`mp-release`、`npm-release` 不再自己声明，继承调用方：
+
+```yaml
+jobs:
+  release:
+    permissions: { contents: write, checks: read, deployments: write, packages: read }   # 不用私有包可去掉 packages: read
+    uses: imelonkid/melon-ci/.github/workflows/server-release.yml@v2
+    secrets: inherit
+```
+
+| 流水线 | 调用方要给的权限 |
+|---|---|
+| `server-release` | `contents: write`、`checks: read`、`deployments: write`；用私有包再加 `packages: read` |
+| `mp-release` | `contents: write`、`checks: read`；用私有包再加 `packages: read` |
+| `npm-release` | `contents: write`、`checks: read`、`packages: write` |
+| `pr-check` | 不用给：自己声明了 `contents: read`、`packages: read` |
+
+**私有包 `@imelonkid/*`**（GitHub Packages）：`pr-check` 的测试步骤、`server-release` / `mp-release` 的构建步骤都有环境变量 `NODE_AUTH_TOKEN`（= 本次运行的 `GITHUB_TOKEN`），项目的 `.npmrc` 引用它；镜像构建另传 BuildKit secret `npm_token`（Dockerfile：`RUN --mount=type=secret,id=npm_token NODE_AUTH_TOKEN=$(cat /run/secrets/npm_token) npm ci`），令牌不进镜像层。包那边要在 Package settings → Manage Actions access 里给用它的仓库读权限。
+
+**库发布 `npm-release`**：`package.json` 的 `name` 是 `@imelonkid/<名>`、`publishConfig.registry` 指向 GitHub Packages，仓库里 `version` 固定 `0.0.0`（版本号按 tag 注入）；不查发布窗口；`CHANGELOG.md` 里有 `## vX.Y.Z` 一段就作为 Release 说明。示例见 melon-common。
 
 发布 / 回滚需要仓库里有 `production` 环境（只允许 main 分支，需要 GitHub Pro 才能在私有仓库使用）：环境 Secret `DEPLOY_SSH_KEY`（主机部署入口的钥匙，只能操作本服务）、环境变量 `DEPLOY_HOST`（`deploy@<IP>`）与 `DEPLOY_KNOWN_HOSTS`；**镜像仓库（v2 起必需）**：环境变量 `ACR_REGISTRY`、`ACR_USERNAME`，环境 Secret `ACR_PASSWORD`。部署入口 deploy-agent 在私有运维仓库里。
 
