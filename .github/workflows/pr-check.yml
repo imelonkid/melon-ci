@@ -36,6 +36,9 @@ defaults:
 jobs:
   secrets:
     name: 密钥扫描
+    concurrency:        # 同一个 PR 有新推送：取消还没跑完的旧检查，只跑最新的（推送到 main 的不取消：发布门禁要看 main 每个提交的结果）
+      group: pr-check-secrets-${{ github.repository }}-${{ github.event.pull_request.number || github.sha }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -55,6 +58,9 @@ jobs:
 
   standard:
     name: 运维规范
+    concurrency:        # 同一个 PR 有新推送：取消还没跑完的旧检查，只跑最新的（推送到 main 的不取消：发布门禁要看 main 每个提交的结果）
+      group: pr-check-standard-${{ github.repository }}-${{ github.event.pull_request.number || github.sha }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -70,6 +76,9 @@ jobs:
 
   test:
     name: 测试
+    concurrency:        # 同一个 PR 有新推送：取消还没跑完的旧检查，只跑最新的（推送到 main 的不取消：发布门禁要看 main 每个提交的结果）
+      group: pr-check-test-${{ github.repository }}-${{ github.event.pull_request.number || github.sha }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -84,6 +93,9 @@ jobs:
 
   image:
     name: 镜像构建
+    concurrency:        # 同一个 PR 有新推送：取消还没跑完的旧检查，只跑最新的（推送到 main 的不取消：发布门禁要看 main 每个提交的结果）
+      group: pr-check-image-${{ github.repository }}-${{ github.event.pull_request.number || github.sha }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
