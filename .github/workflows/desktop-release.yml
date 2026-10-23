@@ -13,6 +13,7 @@
 # manifest: deploy（默认，多端项目）时版本清单经部署入口放到服务端下载站，还要部署入口（DEPLOY_SSH_KEY、DEPLOY_HOST、DEPLOY_KNOWN_HOSTS）；
 # manifest: oss（独立桌面应用，没有服务端）时版本清单也放 OSS，不需要部署入口。
 # go-version：构建前装 Go（比如从源码编译随应用分发的命令行工具），不填不装。
+# runner：macOS 构建机，默认 macos-14；原生 App 要更新的 Xcode / macOS SDK（如 SwiftPM 6、macOS 15 SDK）时传 macos-15。
 name: desktop-release
 
 on:
@@ -26,6 +27,7 @@ on:
       manifest:     { type: string, default: "deploy" }   # deploy | oss（见上）
       go-version:   { type: string, default: "" }
       pnpm-version: { type: string, default: "10.32.1" }
+      runner:       { type: string, default: "macos-14" }   # 构建机：要更新的 Xcode / macOS SDK 时改（如 macos-15）
 
 permissions:
   contents: write
@@ -61,7 +63,7 @@ jobs:
   build:
     name: 构建（macOS）
     needs: gate
-    runs-on: macos-14                     # Apple 芯片，原生构建 arm64
+    runs-on: ${{ inputs.runner }}         # Apple 芯片，原生构建 arm64（默认 macos-14）
     steps:
       - uses: actions/checkout@v5
         with: { ref: "${{ needs.gate.outputs.tag }}", fetch-depth: 0 }
