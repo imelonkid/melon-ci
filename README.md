@@ -11,7 +11,7 @@ melonkid 各项目共用的 GitHub Actions 可复用流水线（开发发布平�
 | [`server-rollback.yml`](.github/workflows/server-rollback.yml) | 服务端回滚（不受窗口限制，秒级） | ✅ |
 | [`server-status.yml`](.github/workflows/server-status.yml) | 线上版本与最近部署事件 | ✅ |
 | [`mp-release.yml`](.github/workflows/mp-release.yml) | 微信小程序发布：门禁 → 打 tag `mp-v` → 构建 → 经部署入口在固定 IP 主机上传为体验版（`mp-upload`）→ GitHub Release；提审 / 全量在微信后台 | ✅ |
-| [`desktop-release.yml`](.github/workflows/desktop-release.yml) | 桌面端发布：门禁 → macOS 构建 → 对象存储 + 版本清单 + GitHub Release。`manifest: deploy`（默认，多端项目：清单经部署入口放服务端下载站）/ `oss`（独立桌面应用：清单也放对象存储，不需要部署入口）；`go-version` 构建前装 Go | ✅ |
+| [`desktop-release.yml`](.github/workflows/desktop-release.yml) | 桌面端发布：门禁 → macOS 构建 → 对象存储 + 版本清单 + GitHub Release。`manifest: deploy`（默认，多端项目：清单经部署入口放服务端下载站）/ `oss`（独立桌面应用：清单也放对象存储，不需要部署入口）；`go-version` 构建前装 Go；`runner` 选 macOS 构建机；`sign: true` 用 Developer ID 正式签名并公证 | ✅ |
 | [`npm-release.yml`](.github/workflows/npm-release.yml) | 库发布：门禁（main CI 绿，不查发布窗口）→ 打 tag → 测试 → 版本号按 tag 注入 → 发到 GitHub Packages → Release（说明取自 CHANGELOG） | ✅ |
 | [`actions/release-gate`](.github/actions/release-gate/action.yml) | 各端共用的发布门禁：发布窗口（`check-window: false` 可关，库用）、main CI 全绿、打 tag | ✅ |
 | `harmony-release.yml` | 鸿蒙发布 | 待 AGC 证书 |
@@ -55,12 +55,23 @@ jobs:
 
 发布 / 回滚需要仓库里有 `production` 环境（只允许 main 分支，需要 GitHub Pro 才能在私有仓库使用）：环境 Secret `DEPLOY_SSH_KEY`（主机部署入口的钥匙，只能操作本服务）、环境变量 `DEPLOY_HOST`（`deploy@<IP>`）与 `DEPLOY_KNOWN_HOSTS`；**镜像仓库（v2 起必需）**：环境变量 `ACR_REGISTRY`、`ACR_USERNAME`，环境 Secret `ACR_PASSWORD`。部署入口 deploy-agent 在私有运维仓库里。
 
+**桌面端正式签名 `desktop-release` 的 `sign: true`**（默认关，照旧 ad-hoc 签名）：构建任务绑 `production` 环境，要这些环境 Secret，缺一项直接失败：
+
+| Secret | 内容 |
+|---|---|
+| `MACOS_CERT_P12_BASE64`、`MACOS_CERT_P12_PASSWORD` | Developer ID Application 证书连私钥导出的 p12（base64）和它的导出密码 |
+| `NOTARY_KEY_P8_BASE64`、`NOTARY_KEY_ID`、`NOTARY_ISSUER_ID` | App Store Connect API 密钥（公证用）：p8（base64）、Key ID、Issuer ID |
+| `MACOS_PROVISION_PROFILE_BASE64` | 可选：Developer ID 描述文件（base64）。应用用到钥匙串访问组、iCloud 等受限权限才要，按应用各一份 |
+
+分工：流水线把证书导入临时钥匙串（用完删除），经环境变量 `SIGN_IDENTITY`（证书全名）和 `PROVISIONING_PROFILE`（描述文件路径，配了才有）交给项目的发布脚本；**项目脚本负责签 .app**（由内到外签内嵌的程序，带 `--options runtime`、`--timestamp`）；构建完流水线再签 dmg、`notarytool` 公证、钉上公证票据，并用 `spctl` 复查。dmg 在 build 之后还会变，所以**安装包的 sha256 要在 publish 阶段算**。同一张证书和 API 密钥可以给同一个开发者账号下的所有应用用，但 Secret 按仓库各设一份。
+
 ## 版本
 
 调用方固定在主版本（`@v2`）。不兼容的改动发新的主版本；兼容的改动把当前主版本 tag 移到新提交。
 
 | 版本 | 变化 |
 |---|---|
+| `v2` 兼容更新（2026-10-28） | `desktop-release` 加 `sign`（Developer ID 签名 + 公证，默认关，默认行为不变）；补记 `runner` 输入（默认 `macos-14`） |
 | `v2` 兼容更新（2026-10-20） | 新增 `npm-release`（库发布）；私有包 `@imelonkid/*`：PR 检查、服务端 / 小程序发布带读包令牌（测试与构建有 `NODE_AUTH_TOKEN`，镜像构建传 BuildKit secret `npm_token`）；发布流水线不再自己声明权限、继承调用方（用私有包的项目在发布表单加 `packages: read`）；`release-gate` 加 `check-window` |
 | `v2` 兼容更新（2026-10-17） | 新增 `mp-release`（小程序发布） |
 | `v2` 兼容更新（2026-10-15） | `desktop-release` 加 `manifest`、`go-version` 两个可选输入，默认行为不变 |

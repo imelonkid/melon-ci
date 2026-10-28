@@ -14,6 +14,13 @@
 # manifest: oss（独立桌面应用，没有服务端）时版本清单也放 OSS，不需要部署入口。
 # go-version：构建前装 Go（比如从源码编译随应用分发的命令行工具），不填不装。
 # runner：macOS 构建机，默认 macos-14；原生 App 要更新的 Xcode / macOS SDK（如 SwiftPM 6、macOS 15 SDK）时传 macos-15。
+# sign：用 Developer ID 证书正式签名并公证（默认 false：照旧，项目脚本自己 ad-hoc 签名）。打开后构建任务绑 production 环境，要这些环境 Secret：
+#   MACOS_CERT_P12_BASE64、MACOS_CERT_P12_PASSWORD（Developer ID Application 证书和私钥导出的 p12）、
+#   NOTARY_KEY_P8_BASE64、NOTARY_KEY_ID、NOTARY_ISSUER_ID（App Store Connect 的 API 密钥，公证用）；
+#   MACOS_PROVISION_PROFILE_BASE64（Developer ID 描述文件，可选：应用用到钥匙串访问组、iCloud 等受限权限才要）。
+#   分工：流水线把证书导入临时钥匙串，经环境变量 SIGN_IDENTITY（证书全名）、PROVISIONING_PROFILE（描述文件路径，有才设）交给项目脚本；
+#   项目脚本负责签 .app（由内到外签内嵌的程序，带 --options runtime 和 --timestamp）；构建完流水线再签 dmg、公证、钉上公证票据。
+#   因为 dmg 在 build 之后还会变，安装包的 sha256 要在 publish 阶段算。
 name: desktop-release
 
 on:
@@ -28,6 +35,7 @@ on:
       go-version:   { type: string, default: "" }
       pnpm-version: { type: string, default: "10.32.1" }
       runner:       { type: string, default: "macos-14" }   # 构建机：要更新的 Xcode / macOS SDK 时改（如 macos-15）
+      sign:         { type: boolean, default: false }       # Developer ID 签名 + 公证（见上）
 
 permissions:
   contents: write
@@ -64,6 +72,7 @@ jobs:
     name: 构建（macOS）
     needs: gate
     runs-on: ${{ inputs.runner }}         # Apple 芯片，原生构建 arm64（默认 macos-14）
+    environment: ${{ inputs.sign && 'production' || '' }}   # 签名证书只在 production（只允许 main）；不签名时不绑环境
     steps:
       - uses: actions/checkout@v5
         with: { ref: "${{ needs.gate.outputs.tag }}", fetch-depth: 0 }
@@ -73,12 +82,87 @@ jobs:
       - if: inputs.go-version != ''
         uses: actions/setup-go@v5
         with: { go-version: "${{ inputs.go-version }}", cache: false }
+      - name: 导入签名证书
+        if: inputs.sign
+        env:
+          P12: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERT_P12_PASSWORD }}
+          PROFILE: ${{ secrets.MACOS_PROVISION_PROFILE_BASE64 }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8_BASE64 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          # 缺一项就停：不悄悄退回 ad-hoc 签名
+          missing=""
+          for v in P12 P12_PASSWORD NOTARY_KEY_P8 NOTARY_KEY_ID NOTARY_ISSUER_ID; do [[ -n "${!v}" ]] || missing+=" $v"; done
+          [[ -z "$missing" ]] || { echo "::error::sign: true 但 production 环境缺签名 / 公证 Secret：${missing}（名字见 melon-ci README）"; exit 1; }
+          d="$RUNNER_TEMP/signing"; install -d -m 700 "$d"
+          kc="$d/signing.keychain-db"; kcpw="$(openssl rand -hex 24)"
+          security create-keychain -p "$kcpw" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$kcpw" "$kc"
+          printf '%s' "$P12" | base64 --decode > "$d/cert.p12"
+          security import "$d/cert.p12" -k "$kc" -P "$P12_PASSWORD" -f pkcs12 -T /usr/bin/codesign >/dev/null
+          rm -f "$d/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kcpw" "$kc" >/dev/null
+          # 临时钥匙串放进搜索列表（codesign 靠它找证书），原有的保留
+          read -ra old <<<"$(security list-keychains -d user | tr -d '"' | tr '\n' ' ')"
+          security list-keychains -d user -s "$kc" "${old[@]}"
+          find_id() { security find-identity -v -p codesigning "$kc" | sed -nE 's/.*"(Developer ID Application: [^"]+)".*/\1/p' | head -1; }
+          id="$(find_id)"
+          if [[ -z "$id" ]]; then
+            # 构建机缺苹果的 Developer ID 中间证书时证书链不完整、显示无效：补上再找（公开证书，来自苹果官网）
+            for ca in DeveloperIDCA DeveloperIDG2CA; do
+              curl -fsSL "https://www.apple.com/certificateauthority/$ca.cer" -o "$d/$ca.cer" && security import "$d/$ca.cer" -k "$kc" >/dev/null || true
+            done
+            id="$(find_id)"
+          fi
+          [[ -n "$id" ]] || { echo "::error::p12 里没有有效的 Developer ID Application 证书（证书过期、被吊销，或者导出时没带私钥）"; exit 1; }
+          printf '%s' "$NOTARY_KEY_P8" | base64 --decode > "$d/notary.p8"
+          { echo "SIGN_IDENTITY=$id"; echo "SIGNING_KEYCHAIN=$kc"; } >> "$GITHUB_ENV"
+          if [[ -n "$PROFILE" ]]; then
+            printf '%s' "$PROFILE" | base64 --decode > "$d/app.provisionprofile"
+            echo "PROVISIONING_PROFILE=$d/app.provisionprofile" >> "$GITHUB_ENV"
+          fi
+          echo "签名证书：${id}${PROFILE:+，带描述文件}" >> "$GITHUB_STEP_SUMMARY"
       - name: 构建
         env: { T: "${{ needs.gate.outputs.tag }}" }
         run: |
           s=$(date +%s)
           bash "${{ inputs.script }}" build "$T" "$RUNNER_TEMP/out"
           echo "构建 $T：$(( $(date +%s) - s ))s，$(du -h "$RUNNER_TEMP"/out/*.dmg | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
+      - name: 签名与公证安装包
+        if: inputs.sign
+        env:
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          key="$RUNNER_TEMP/signing/notary.p8"
+          notary() { xcrun notarytool "$@" --key "$key" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID"; }
+          shopt -s nullglob; dmgs=("$RUNNER_TEMP"/out/*.dmg)
+          [[ ${#dmgs[@]} -gt 0 ]] || { echo "::error::构建产物里没有 dmg"; exit 1; }
+          for dmg in "${dmgs[@]}"; do
+            name="$(basename "$dmg")"; s=$(date +%s)
+            codesign --force --timestamp --sign "$SIGN_IDENTITY" "$dmg"
+            # 公证会检查里面的 .app：要 Developer ID 签名、开 hardened runtime、带时间戳
+            res="$(notary submit "$dmg" --wait --timeout 30m --output-format json)" || true
+            status="$(jq -r '.status // "提交失败"' <<<"$res" 2>/dev/null || echo 提交失败)"
+            if [[ "$status" != "Accepted" ]]; then
+              echo "::error::${name} 公证没通过：${status}"
+              sid="$(jq -r '.id // empty' <<<"$res" 2>/dev/null || true)"
+              [[ -n "$sid" ]] && notary log "$sid" || echo "$res"
+              exit 1
+            fi
+            xcrun stapler staple "$dmg"
+            xcrun stapler validate "$dmg"
+            spctl --assess --type open --context context:primary-signature --verbose "$dmg"
+            echo "公证 ${name}：通过，$(( $(date +%s) - s ))s" >> "$GITHUB_STEP_SUMMARY"
+          done
+      - name: 清理签名证书
+        if: always() && inputs.sign
+        run: |
+          [[ -n "${SIGNING_KEYCHAIN:-}" ]] && security delete-keychain "$SIGNING_KEYCHAIN" || true
+          rm -rf "$RUNNER_TEMP/signing"
       - uses: actions/upload-artifact@v4
         with: { name: desktop-dist, path: "${{ runner.temp }}/out", retention-days: 7 }
 
