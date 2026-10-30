@@ -153,7 +153,12 @@ jobs:
               [[ -n "$sid" ]] && notary log "$sid" || echo "$res"
               exit 1
             fi
-            xcrun stapler staple "$dmg"
+            # 钉票据要从苹果 CloudKit 取，偶尔断连（Error 68）；公证已通过，重试即可
+            for i in 1 2 3 4 5; do
+              xcrun stapler staple "$dmg" && break
+              [[ $i == 5 ]] && { echo "::error::${name} 公证已通过，但钉票据连续 5 次失败（苹果网络）：重跑这一步即可"; exit 1; }
+              echo "钉票据失败，$((i * 15)) 秒后重试（$i/5）"; sleep $((i * 15))
+            done
             xcrun stapler validate "$dmg"
             spctl --assess --type open --context context:primary-signature --verbose "$dmg"
             echo "公证 ${name}：通过，$(( $(date +%s) - s ))s" >> "$GITHUB_STEP_SUMMARY"
