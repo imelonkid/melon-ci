@@ -1,0 +1,26 @@
+name: 页面制品检查
+on:
+  pull_request:
+    paths:
+      - '.github/actions/page-artifact/**'
+      - '.github/workflows/page-*.yml'
+      - 'tests/**'
+      - 'scripts/ci-test.sh'
+  push:
+    branches: [main]
+    paths:
+      - '.github/actions/page-artifact/**'
+      - '.github/workflows/page-*.yml'
+      - 'tests/**'
+      - 'scripts/ci-test.sh'
+permissions:
+  contents: read
+jobs:
+  test:
+    name: 页面制品测试
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: 页面归档与上传边界测试
+        run: bash scripts/ci-test.sh

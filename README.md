@@ -82,3 +82,15 @@ jobs:
 ## License
 
 MIT
+
+## 静态 Hero 页面交付（新增，待发布后接入）
+
+`page-release.yml` 是独立制品流水线，不改变服务端和桌面端发布。通过现有应用登记的 Hero 端选用；门户不硬编码业务应用。调用方使用 `project`、`page-dir`、`bump`、`emergency`，授予 `contents: write` 与 `checks: read`。production 保持 main 限制，仅复用 `OSS_BUCKET`、`OSS_ENDPOINT`、`OSS_ACCESS_KEY_ID`、`OSS_ACCESS_KEY_SECRET`，不需要主机地址或 SSH 密钥。
+
+流程：现有发布门禁 → 生成 page-vX.Y.Z → 只打包 tag 中的页面目录 → 上传包、最后上传清单 → 保存 `page-receipt` Actions artifact。成功只代表制品就绪，门户确认此 run 后向运维程序提交部署请求，再由内网部署和健康检查完成上线。工作流输出 tag、commit、manifest-sha256；门户接力以当前 run 的 `page-receipt` 为来源，不读取可变的 latest 地址。
+
+公开制品固定为 `<project>/page/<tag>/site.tar.gz` 与 `manifest.json`。清单协议 `melon-page/v1` 字段：format、repo、project、tag、commit、path、archive、sha256、size；包根目录直接包含 index.html。receipt 另含 manifest_url、manifest_sha256。归档只包含普通文件和目录，最多 64 MiB；拒绝符号链接和未进入 main 的 tag。同版本包可重复生成，不同内容冲突拒绝覆盖。上传使用 OSS 条件写入，同内容冲突读取核对后允许继续；启用前由所有者确认桶版本控制未启用或暂停（此时禁止覆盖头才有效），不得由流水线改全桶配置。匿名下载权限仅限项目页面前缀。
+
+此新增 action 与工作流需先合并、发布到引用的 v2，再接入业务仓库；本 PR 不移动 v2、不触发生产发布。门户接力、部署程序和首次 OSS 实测独立验收，不把本地测试当作完整上线验证。
+
+本地验证：`bash scripts/ci-test.sh`；仅验证归档和上传协议，无云端写操作。

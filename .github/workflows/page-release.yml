@@ -1,0 +1,87 @@
+# 独立静态页制品流水线：只打包上传 OSS，GitHub 成功仅表示制品就绪。
+# 门户确认本 run 成功后写请求，由 JD 运维程序经内网调用部署入口；健康检查通过才算上线。
+# 调用方：contents: write、checks: read；production 仅 main，复用 OSS_*，不配置 DEPLOY_*。
+# 新增 action 需随本工作流发布到 v2 后再接入产品；不改变任何已有流水线。
+name: page-release
+on:
+  workflow_call:
+    inputs:
+      project: { type: string, required: true }
+      page-dir: { type: string, default: site }
+      bump: { type: string, default: patch }
+      emergency: { type: boolean, default: false }
+    outputs:
+      tag: { value: '${{ jobs.gate.outputs.tag }}' }
+      commit: { value: '${{ jobs.ship.outputs.commit }}' }
+      manifest-sha256: { value: '${{ jobs.ship.outputs.manifest-sha256 }}' }
+concurrency:
+  group: page-${{ github.repository }}
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+jobs:
+  gate:
+    name: 页面门禁与打 tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0, ref: main }
+      - name: 检查 CI 与版本
+        id: tag
+        uses: imelonkid/melon-ci/.github/actions/release-gate@v2
+        with:
+          tag-prefix: page-v
+          bump: ${{ inputs.bump }}
+          emergency: ${{ inputs.emergency }}
+          token: ${{ github.token }}
+  ship:
+    name: 页面打包与上传
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    outputs:
+      commit: ${{ steps.upload.outputs.commit }}
+      manifest-sha256: ${{ steps.upload.outputs.manifest-sha256 }}
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0, ref: main }
+      - name: 打包页面
+        uses: imelonkid/melon-ci/.github/actions/page-artifact@v2
+        with:
+          command: package
+          project: ${{ inputs.project }}
+          tag: ${{ needs.gate.outputs.tag }}
+          page-dir: ${{ inputs.page-dir }}
+          out: ${{ runner.temp }}/page
+      - name: 上传页面包与清单
+        id: upload
+        uses: imelonkid/melon-ci/.github/actions/page-artifact@v2
+        env:
+          OSS_BUCKET: ${{ vars.OSS_BUCKET }}
+          OSS_ENDPOINT: ${{ vars.OSS_ENDPOINT }}
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+        with:
+          command: upload
+          project: ${{ inputs.project }}
+          tag: ${{ needs.gate.outputs.tag }}
+          out: ${{ runner.temp }}/page
+      - name: 保存门户交付凭据
+        uses: actions/upload-artifact@v4
+        with:
+          name: page-receipt
+          path: ${{ runner.temp }}/page/receipt.json
+          if-no-files-found: error
+      - name: 记录制品就绪
+        env:
+          PAGE_TAG: ${{ needs.gate.outputs.tag }}
+          PAGE_COMMIT: ${{ steps.upload.outputs.commit }}
+          PAGE_MANIFEST: ${{ steps.upload.outputs.manifest-sha256 }}
+        run: |
+          echo "页面制品就绪：$PAGE_TAG（尚未部署）" >> "$GITHUB_STEP_SUMMARY"
+          echo "commit=$PAGE_COMMIT，manifest-sha256=$PAGE_MANIFEST" >> "$GITHUB_STEP_SUMMARY"
