@@ -1,0 +1,26 @@
+name: page-artifact
+description: 固定 tag 的静态页面包与 OSS 交付；不连接主机
+inputs:
+  command: { required: true, description: package 或 upload }
+  project: { required: true, description: OSS 项目前缀 }
+  tag: { required: true, description: page-vX.Y.Z }
+  page-dir: { default: site, description: 页面目录 }
+  out: { required: true, description: 制品暂存目录 }
+outputs:
+  manifest-sha256: { value: '${{ steps.run.outputs.manifest-sha256 }}', description: 发布清单 SHA-256 }
+  commit: { value: '${{ steps.run.outputs.commit }}', description: 来源 commit }
+runs:
+  using: composite
+  steps:
+    - name: 处理页面制品
+      id: run
+      shell: bash
+      env:
+        PAGE_TOOL: ${{ github.action_path }}/page_artifact.py
+        PAGE_COMMAND: ${{ inputs.command }}
+        PAGE_PROJECT: ${{ inputs.project }}
+        PAGE_TAG: ${{ inputs.tag }}
+        PAGE_DIR: ${{ inputs.page-dir }}
+        PAGE_OUT: ${{ inputs.out }}
+      run: |
+        python3 "$PAGE_TOOL" "$PAGE_COMMAND" --repo "$GITHUB_REPOSITORY" --project "$PAGE_PROJECT" --tag "$PAGE_TAG" --page-dir "$PAGE_DIR" --out "$PAGE_OUT"
