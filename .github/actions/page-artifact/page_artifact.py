@@ -102,17 +102,21 @@ def put(base, bucket, key, data, content_type, access_id, access_secret, opener=
             raise ValueError(f'OSS 对象冲突，禁止覆盖：{key}')
 
 
-def upload(out, env=os.environ):
+def oss_config(env=os.environ):
     bucket, endpoint, access_id, access_secret = (env[k] for k in (
         'OSS_BUCKET', 'OSS_ENDPOINT', 'OSS_ACCESS_KEY_ID', 'OSS_ACCESS_KEY_SECRET'))
     if not all((bucket, endpoint, access_id, access_secret)):
         raise ValueError('缺 OSS 配置')
     if not re.fullmatch(r'[a-z0-9][a-z0-9-]{1,61}[a-z0-9]', bucket) or not re.fullmatch(r'oss-[a-z0-9-]+\.aliyuncs\.com', endpoint):
         raise ValueError('OSS 桶或 endpoint 不合法')
+    return bucket, f'https://{bucket}.{endpoint}', access_id, access_secret
+
+
+def upload(out, env=os.environ):
+    bucket, base, access_id, access_secret = oss_config(env)
     out = Path(out)
     manifest = json.loads((out / 'manifest.json').read_text())
     prefix = f"{manifest['project']}/page/{manifest['tag']}"
-    base = f'https://{bucket}.{endpoint}'
     for name, content_type in [('site.tar.gz', 'application/gzip'), ('manifest.json', 'application/json')]:
         data = (out / name).read_bytes()
         started = time.monotonic()
