@@ -94,3 +94,5 @@ MIT
 此新增 action 与工作流需先合并、发布到引用的 v2，再接入业务仓库；本 PR 不移动 v2、不触发生产发布。门户接力、部署程序和首次 OSS 实测独立验收，不把本地测试当作完整上线验证。
 
 本地验证：`bash scripts/ci-test.sh`；仅验证归档和上传协议，无云端写操作。
+
+OSS 页面权限自检：`.github/actions/page-artifact/probe.py --project <项目>` 使用已有 OSS_* 环境配置，只写 `<项目>/page/_checks/<随机ID>/probe.txt`。验证首次上传 200、匿名下载一致、重复上传 409，以及冲突后原内容不变；不打 tag、不发布、不删除对象，不需要扩大 RAM 权限。由项目手动表单以固定审核过的 commit 调用，production 只允许 main；自检脚本与上传实现同仓库，不在业务项目复制签名逻辑。
