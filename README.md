@@ -71,6 +71,7 @@ jobs:
 
 | 版本 | 变化 |
 |---|---|
+| `v2` 兼容更新（2026-11-25） | `release-gate` 遇到 `main` CI 仍在 `queued / in_progress`（或刚合并尚未出现检查）时轮询等待结果（默认最长等 5 分钟、每 10 秒查一次、无检查宽限 60 秒）；任意必过检查失败立刻中止，同名重跑检查按最新记录判定 |
 | `v2` 兼容更新（2026-10-30） | `desktop-release` 签名公证：钉公证票据（`stapler staple`）失败时重试 5 次——票据从苹果 CloudKit 取，偶尔断连（Error 68），公证本身已通过 |
 | `v2` 兼容更新（2026-10-28） | `desktop-release` 加 `sign`（Developer ID 签名 + 公证，默认关，默认行为不变）；补记 `runner` 输入（默认 `macos-14`） |
 | `v2` 兼容更新（2026-10-20） | 新增 `npm-release`（库发布）；私有包 `@imelonkid/*`：PR 检查、服务端 / 小程序发布带读包令牌（测试与构建有 `NODE_AUTH_TOKEN`，镜像构建传 BuildKit secret `npm_token`）；发布流水线不再自己声明权限、继承调用方（用私有包的项目在发布表单加 `packages: read`）；`release-gate` 加 `check-window` |
