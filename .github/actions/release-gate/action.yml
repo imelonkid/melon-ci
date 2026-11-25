@@ -7,6 +7,9 @@ inputs:
   bump:       { description: "patch | minor | major | 已有 tag", required: true }
   emergency:  { description: "紧急变更（跳过发布窗口）", default: "false" }
   check-window: { description: "检查发布窗口（库不上线，传 false）", default: "true" }
+  ci-wait-seconds:   { description: "main CI 进行中时最长等待秒数", default: "300" }
+  ci-poll-seconds:   { description: "等待 main CI 时的轮询间隔秒数", default: "10" }
+  ci-appear-seconds: { description: "合并后尚未出现 CI 检查时的最长宽限秒数", default: "60" }
   token:      { description: "GITHUB_TOKEN", required: true }
 outputs:
   tag: { description: "本次发布的 tag", value: "${{ steps.tag.outputs.tag }}" }
@@ -23,25 +26,19 @@ runs:
         if (( h < 8 || h >= 23 )); then echo "::error::现在不在发布窗口（08–23 点）。紧急变更勾选 emergency，并在 24 小时内补复盘"; exit 1; fi
     - name: main 最新提交的 CI 必须是绿的
       shell: bash
-      env: { GH_TOKEN: "${{ inputs.token }}" }
+      env:
+        GH_TOKEN: "${{ inputs.token }}"
+        WAIT_S: "${{ inputs.ci-wait-seconds }}"
+        POLL_S: "${{ inputs.ci-poll-seconds }}"
+        APPEAR_S: "${{ inputs.ci-appear-seconds }}"
       run: |
         sha=$(git rev-parse HEAD)
-        all=$(gh api "repos/${{ github.repository }}/commits/$sha/check-runs?per_page=100" --jq '[.check_runs[] | select(.name | startswith("check /"))]')
-        # 与分支保护口径一致：main 开了分支保护就只要求它声明的必过检查（每一项都要有、都要绿）；没开就要求全部 check /
-        req=$(gh api "repos/${{ github.repository }}/branches/main" --jq '[.protection.required_status_checks.contexts[]? | select(startswith("check /"))]' 2>/dev/null || echo '[]')
-        if (( $(jq length <<<"$req") > 0 )); then
-          runs=$(jq --argjson r "$req" '[.[] | select(.name as $n | $r | index($n))]' <<<"$all")
-          missing=$(jq -r --argjson have "$(jq '[.[].name]' <<<"$runs")" '.[] | select(. as $n | $have | index($n) | not)' <<<"$req")
-          [[ -z "$missing" ]] || { echo "::error::main 最新提交缺少必过检查：$missing（等 CI 跑完再发）"; exit 1; }
-          echo "按分支保护的必过检查（$(jq length <<<"$req") 项）"
-          jq -r --argjson r "$req" '.[] | select(.name as $n | $r | index($n) | not) | select(.conclusion != "success") | "::notice::非必过检查未通过：\(.name)（不拦发布）"' <<<"$all"
-        else
-          runs="$all"
-        fi
-        n=$(jq length <<<"$runs"); bad=$(jq '[.[] | select(.conclusion != "success")] | length' <<<"$runs")
-        echo "main@${sha::8}：CI 检查 $n 项，未通过 $bad 项"
-        (( n > 0 )) || { echo "::error::main 最新提交没有 CI 结果（等 CI 跑完再发）"; exit 1; }
-        (( bad == 0 )) || { jq -r '.[] | "  \(.name)：\(.status) \(.conclusion)"' <<<"$runs"; echo "::error::main 的 CI 没通过，不能发布"; exit 1; }
+        python3 "${{ github.action_path }}/wait_ci.py" \
+          --repo "${{ github.repository }}" \
+          --sha "$sha" \
+          --wait-seconds "$WAIT_S" \
+          --poll-seconds "$POLL_S" \
+          --appear-seconds "$APPEAR_S"
     - name: 定 tag
       id: tag
       shell: bash
